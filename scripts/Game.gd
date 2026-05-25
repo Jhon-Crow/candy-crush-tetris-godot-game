@@ -22,15 +22,15 @@ const FALL_INTERVAL := 0.30  # seconds between downward steps
 ## When true, pieces are automatically steered toward a good landing column.
 @export var auto_play := true
 
-# Candy palette (bright, saturated sweets).
+# Jewel-tone crystal palette (issue #13 visual requirement).
 const COLORS := [
-	Color("ff4d6d"), # strawberry
-	Color("ff922b"), # orange
-	Color("ffd43b"), # lemon
-	Color("51cf66"), # apple
-	Color("4dabf7"), # blueberry
-	Color("9775fa"), # grape
-	Color("f783ac"), # bubblegum
+	Color(0.95, 0.22, 0.35, 1.0), # ruby
+	Color(0.95, 0.52, 0.10, 1.0), # amber
+	Color(0.92, 0.80, 0.12, 1.0), # citrine
+	Color(0.18, 0.78, 0.35, 1.0), # emerald
+	Color(0.18, 0.60, 0.95, 1.0), # sapphire
+	Color(0.52, 0.30, 0.92, 1.0), # amethyst
+	Color(0.90, 0.38, 0.72, 1.0), # rose quartz
 ]
 
 # Tetromino shapes as cell offsets (x right, y up), each normalised so the
