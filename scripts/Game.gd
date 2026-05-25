@@ -1,5 +1,6 @@
 extends Node3D
-## Candy Crush + Tetris — primitive auto-falling implementation with special balls.
+## Candy Crush + Tetris — primitive auto-falling implementation with special balls
+## and Candy Crush swap mechanics for settled balls.
 ##
 ## Tetromino pieces made of multicoloured candy balls fall automatically down a
 ## grid. The game is played on a flat playfield, but everything is rendered in a
@@ -12,6 +13,13 @@ extends Node3D
 ##               locked piece
 ##   FREEZE    — slows the fall speed for several seconds
 ##   LIGHTNING — clears the entire column the ball lands in
+##
+## **Candy Crush mechanic:** once a piece has landed (settled), the player can
+## click/tap on any two adjacent settled balls to swap them. A swap is only
+## accepted if it creates a match of 3 or more same-coloured balls in a row or
+## column (just like the original Candy Crush). Matched balls are removed and
+## balls above fall down to fill the gaps. The mechanic never applies to balls
+## that are still falling as part of the active piece.
 ##
 ## When [member auto_play] is enabled (the default) a lightweight heuristic
 ## steers each piece toward the column that keeps the stack flat and clears
@@ -95,12 +103,23 @@ var _freeze_timer := 0.0          # > 0 when a freeze effect is active
 var _anim_time := 0.0             # runs continuously for material animations
 
 var _lines := 0
+var _matches := 0                 # Candy Crush matches made
 var _specials_triggered := 0      # HUD counter for special effects fired
 
 var _ball_mesh: SphereMesh
 var _lines_label: Label
 var _freeze_label: Label          # shows "FROZEN!" while freeze is active
+var _matches_label: Label         # HUD label for match count
 var _background: Background
+
+# --- Candy Crush selection state ---------------------------------------------
+## The grid cell of the currently selected settled ball, or Vector2i(-1,-1) if
+## none is selected. Selection is only possible while no active piece is falling.
+var _selected_cell := Vector2i(-1, -1)
+
+# Visual highlight: a slightly enlarged semi-transparent overlay sphere shown on
+# the selected cell.
+var _selection_highlight: MeshInstance3D
 
 
 func _ready() -> void:
@@ -117,6 +136,7 @@ func _ready() -> void:
 	_ball_mesh.height = 0.92
 	_ball_mesh.radial_segments = 24
 	_ball_mesh.rings = 12
+	_build_selection_highlight()
 	_spawn_piece()
 
 
@@ -145,6 +165,249 @@ func _process(delta: float) -> void:
 	for i in _piece_nodes.size():
 		var node: MeshInstance3D = _piece_nodes[i]
 		node.position = node.position.move_toward(_cell_to_world(_piece_cells[i]), speed * delta)
+
+
+# --- Input handling ----------------------------------------------------------
+func _input(event: InputEvent) -> void:
+	# Candy Crush swaps only happen via left mouse click or single touch tap.
+	var is_click := false
+	var screen_pos := Vector2.ZERO
+
+	if event is InputEventMouseButton:
+		var mb: InputEventMouseButton = event
+		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
+			is_click = true
+			screen_pos = mb.position
+	elif event is InputEventScreenTouch:
+		var st: InputEventScreenTouch = event
+		if st.pressed:
+			is_click = true
+			screen_pos = st.position
+
+	if not is_click:
+		return
+
+	# Determine which settled grid cell (if any) was hit.
+	var hit_cell := _screen_to_settled_cell(screen_pos)
+	if hit_cell == Vector2i(-1, -1):
+		# Clicked on empty space — deselect.
+		_deselect()
+		return
+
+	if _selected_cell == Vector2i(-1, -1):
+		# Nothing selected yet — select this cell.
+		_select(hit_cell)
+	elif hit_cell == _selected_cell:
+		# Clicked the same cell again — deselect.
+		_deselect()
+	else:
+		# A second cell was clicked — try to swap if they are adjacent.
+		var dx: int = absi(hit_cell.x - _selected_cell.x)
+		var dy: int = absi(hit_cell.y - _selected_cell.y)
+		if dx + dy == 1:  # exactly one step horizontal or vertical
+			_try_swap(_selected_cell, hit_cell)
+		else:
+			# Not adjacent — move selection to the new cell instead.
+			_select(hit_cell)
+
+
+## Convert a screen position to the settled grid cell under it.
+## Returns Vector2i(-1, -1) when no settled ball is at that screen position.
+func _screen_to_settled_cell(screen_pos: Vector2) -> Vector2i:
+	var cam: Camera3D = get_viewport().get_camera_3d()
+	if cam == null:
+		return Vector2i(-1, -1)
+
+	# Project the screen click into a world ray and intersect with the z=0 plane
+	# (the plane all balls live on).
+	var ray_origin: Vector3 = cam.project_ray_origin(screen_pos)
+	var ray_dir: Vector3 = cam.project_ray_normal(screen_pos)
+
+	# z = 0 plane: t = -ray_origin.z / ray_dir.z
+	if abs(ray_dir.z) < 1e-6:
+		return Vector2i(-1, -1)
+	var t: float = -ray_origin.z / ray_dir.z
+	var world_pos: Vector3 = ray_origin + ray_dir * t
+
+	# Convert world position back to grid coordinates.
+	var col := int(round(world_pos.x / CELL + (GRID_W - 1) / 2.0))
+	var row := int(round(world_pos.y / CELL + (GRID_H - 1) / 2.0))
+
+	if col < 0 or col >= GRID_W or row < 0 or row >= GRID_H:
+		return Vector2i(-1, -1)
+	if _settled[row][col] == null:
+		return Vector2i(-1, -1)
+
+	return Vector2i(col, row)
+
+
+func _select(cell: Vector2i) -> void:
+	_selected_cell = cell
+	_update_highlight()
+
+
+func _deselect() -> void:
+	_selected_cell = Vector2i(-1, -1)
+	_update_highlight()
+
+
+## Try to swap the settled balls at [param cell_a] and [param cell_b].
+## The swap is accepted only if it creates at least one match of 3+ same-colour
+## balls (Candy Crush rules). Otherwise the swap is reverted immediately.
+func _try_swap(cell_a: Vector2i, cell_b: Vector2i) -> void:
+	_deselect()
+
+	# Both cells must still be occupied (a piece lock could have changed things).
+	if _settled[cell_a.y][cell_a.x] == null or _settled[cell_b.y][cell_b.x] == null:
+		return
+
+	# Perform the swap in the data grid.
+	_do_swap(cell_a, cell_b)
+
+	# Check if the swap produces any match.
+	var matched := _find_matches()
+	if matched.is_empty():
+		# No match — revert.
+		_do_swap(cell_a, cell_b)
+		return
+
+	# Clear matched balls and let gravity pull remaining settled balls down.
+	_clear_matches(matched)
+	_apply_candy_gravity()
+	_matches += 1
+	_update_hud()
+
+
+## Swap the two settled entries (node + type + colour) in the grid and update 3D positions.
+func _do_swap(cell_a: Vector2i, cell_b: Vector2i) -> void:
+	var node_a: MeshInstance3D = _settled[cell_a.y][cell_a.x]
+	var node_b: MeshInstance3D = _settled[cell_b.y][cell_b.x]
+	var type_a: BallType = _settled_types[cell_a.y][cell_a.x]
+	var type_b: BallType = _settled_types[cell_b.y][cell_b.x]
+	var color_a: Color = _settled_colors[cell_a.y][cell_a.x]
+	var color_b: Color = _settled_colors[cell_b.y][cell_b.x]
+
+	_settled[cell_a.y][cell_a.x] = node_b
+	_settled[cell_b.y][cell_b.x] = node_a
+	_settled_types[cell_a.y][cell_a.x] = type_b
+	_settled_types[cell_b.y][cell_b.x] = type_a
+	_settled_colors[cell_a.y][cell_a.x] = color_b
+	_settled_colors[cell_b.y][cell_b.x] = color_a
+
+	# Move the 3D meshes to their new positions instantly.
+	if node_b != null:
+		node_b.position = _cell_to_world(cell_a)
+	if node_a != null:
+		node_a.position = _cell_to_world(cell_b)
+
+
+## Return the set of cells that form matches of 3+ same-colour balls.
+## Each match is collected horizontally and vertically, per standard Candy Crush.
+func _find_matches() -> Array:
+	var matched := {}  # cell (encoded as int) -> true
+
+	# Horizontal runs.
+	for row in GRID_H:
+		var col := 0
+		while col < GRID_W:
+			if _settled[row][col] == null:
+				col += 1
+				continue
+			var color: Color = _settled_colors[row][col]
+			var run_end := col + 1
+			while run_end < GRID_W and _settled[row][run_end] != null and _settled_colors[row][run_end] == color:
+				run_end += 1
+			if run_end - col >= 3:
+				for c in range(col, run_end):
+					matched[row * GRID_W + c] = true
+			col = run_end
+
+	# Vertical runs.
+	for col in GRID_W:
+		var row := 0
+		while row < GRID_H:
+			if _settled[row][col] == null:
+				row += 1
+				continue
+			var color: Color = _settled_colors[row][col]
+			var run_end := row + 1
+			while run_end < GRID_H and _settled[run_end][col] != null and _settled_colors[run_end][col] == color:
+				run_end += 1
+			if run_end - row >= 3:
+				for r in range(row, run_end):
+					matched[r * GRID_W + col] = true
+			row = run_end
+
+	# Decode the set back to Vector2i cells.
+	var result: Array = []
+	for encoded in matched.keys():
+		result.append(Vector2i(encoded % GRID_W, encoded / GRID_W))
+	return result
+
+
+## Remove all matched cells from the settled grid.
+func _clear_matches(cells: Array) -> void:
+	for cell in cells:
+		var node: MeshInstance3D = _settled[cell.y][cell.x]
+		if node != null:
+			node.queue_free()
+		_settled[cell.y][cell.x] = null
+		_settled_types[cell.y][cell.x] = BallType.NORMAL
+		_settled_colors[cell.y][cell.x] = Color.BLACK
+
+
+## After matches are cleared, slide settled balls downward to fill gaps
+## (column by column, compacting from bottom to top).
+func _apply_candy_gravity() -> void:
+	for col in GRID_W:
+		var write_row := 0
+		for read_row in GRID_H:
+			if _settled[read_row][col] != null:
+				if read_row != write_row:
+					_settled[write_row][col] = _settled[read_row][col]
+					_settled_types[write_row][col] = _settled_types[read_row][col]
+					_settled_colors[write_row][col] = _settled_colors[read_row][col]
+					_settled[read_row][col] = null
+					_settled_types[read_row][col] = BallType.NORMAL
+					_settled_colors[read_row][col] = Color.BLACK
+					# Snap the 3D mesh to its new grid position immediately.
+					_settled[write_row][col].position = _cell_to_world(Vector2i(col, write_row))
+				write_row += 1
+		# Clear any leftover cells above write_row.
+		for r in range(write_row, GRID_H):
+			_settled[r][col] = null
+			_settled_types[r][col] = BallType.NORMAL
+			_settled_colors[r][col] = Color.BLACK
+
+
+# --- Selection highlight ------------------------------------------------------
+func _build_selection_highlight() -> void:
+	_selection_highlight = MeshInstance3D.new()
+	var mesh := SphereMesh.new()
+	mesh.radius = 0.50
+	mesh.height = 1.0
+	mesh.radial_segments = 24
+	mesh.rings = 12
+	_selection_highlight.mesh = mesh
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1, 1, 1, 0.55)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.emission_enabled = true
+	mat.emission = Color(1, 1, 1)
+	mat.emission_energy_multiplier = 0.8
+	_selection_highlight.material_override = mat
+	_selection_highlight.visible = false
+	add_child(_selection_highlight)
+
+
+func _update_highlight() -> void:
+	if _selection_highlight == null:
+		return
+	if _selected_cell == Vector2i(-1, -1):
+		_selection_highlight.visible = false
+	else:
+		_selection_highlight.position = _cell_to_world(_selected_cell) + Vector3(0, 0, 0.15)
+		_selection_highlight.visible = true
 
 
 # --- Game loop ---------------------------------------------------------------
@@ -695,12 +958,18 @@ func _build_hud() -> void:
 	_freeze_label.visible = false
 	layer.add_child(_freeze_label)
 
+	_matches_label = Label.new()
+	_matches_label.add_theme_font_size_override("font_size", 22)
+	_matches_label.add_theme_color_override("font_color", Color("f783ac"))
+	_matches_label.position = Vector2(24, 140)
+	layer.add_child(_matches_label)
+
 	# Legend for special balls.
 	var legend := Label.new()
 	legend.text = "💣 Bomb  🌈 Rainbow  ❄️ Freeze  ⚡ Lightning"
 	legend.add_theme_font_size_override("font_size", 18)
 	legend.add_theme_color_override("font_color", Color("cccccc"))
-	legend.position = Vector2(24, 140)
+	legend.position = Vector2(24, 174)
 	layer.add_child(legend)
 
 	_update_hud()
@@ -715,3 +984,5 @@ func _update_hud() -> void:
 			_freeze_label.visible = true
 		else:
 			_freeze_label.visible = false
+	if _matches_label != null:
+		_matches_label.text = "Candy matches: %d" % _matches

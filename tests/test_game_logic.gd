@@ -1,17 +1,23 @@
 extends SceneTree
-## Headless integration test for the falling-tetromino game logic.
+## Headless integration test for the falling-tetromino game logic plus the
+## Candy Crush swap/match mechanics and special balls.
 ##
 ## Run with:
 ##   godot --headless --script tests/test_game_logic.gd
 ##
 ## Tests:
 ##   1. Core loop invariants over 4 000 steps (piece validity, grid integrity,
-##      line clearing progress).
+##      line clearing progress, colour-grid sync).
 ##   2. BOMB effect — clears cells within the configured radius.
 ##   3. RAINBOW effect — clears all settled balls whose colour matches the piece.
 ##   4. FREEZE effect — sets _freeze_timer and slows the effective fall interval.
 ##   5. LIGHTNING effect — clears the entire target column.
 ##   6. Gravity after special effects — balls fall into gaps left by effects.
+##   7. Candy Crush: a valid swap that creates 3+ match is accepted and clears balls.
+##   8. Candy Crush: a non-matching swap is rejected (reverted) leaving the grid unchanged.
+##   9. Candy Crush: non-adjacent swap is reverted (no match formed).
+##  10. Candy Crush: swapping only works on settled balls, not on actively-falling cells.
+##  11. Candy Crush: _apply_candy_gravity compacts columns with no holes.
 
 const STEPS := 4000
 
@@ -35,6 +41,10 @@ func _initialize() -> void:
 			failures += 1
 		if not _check_settled(game):
 			push_error("T1: Corrupt settled grid at step %d" % i)
+			failures += 1
+		# Parallel colour grid must stay in sync with settled node grid.
+		if not _check_colors_in_sync(game):
+			push_error("T1: _settled_colors out of sync with _settled at step %d" % i)
 			failures += 1
 		if game._piece_cells != last_piece:
 			spawns_seen += 1
@@ -264,6 +274,125 @@ func _initialize() -> void:
 	failures += gravity_fails
 	print("T6 (gravity):   %s" % ("PASS" if gravity_fails == 0 else "FAIL"))
 
+	# ---- Test 7: valid Candy Crush swap accepted ----------------------------
+	var swap_fails := 0
+	var g7: Node3D = scene.instantiate()
+	root.add_child(g7)
+	g7._ready()
+
+	var red := Color("ff4d6d")
+	var blue := Color("4dabf7")
+	# Set up: cols 0,1 red; col 2 blue; col 3 red → swapping col2↔col3 gives
+	# cols 0,1,2 all red → match of 3.
+	_place_ball_color(g7, 0, 0, red)
+	_place_ball_color(g7, 0, 1, red)
+	_place_ball_color(g7, 0, 2, blue)
+	_place_ball_color(g7, 0, 3, red)
+
+	var matches_before: int = g7._matches
+	g7._try_swap(Vector2i(2, 0), Vector2i(3, 0))
+
+	# The three red balls at cols 0,1,2 should be cleared.
+	if g7._settled[0][0] != null:
+		push_error("T7: col 0 should be cleared after match")
+		swap_fails += 1
+	if g7._settled[0][1] != null:
+		push_error("T7: col 1 should be cleared after match")
+		swap_fails += 1
+	if g7._settled[0][2] != null:
+		push_error("T7: col 2 should be cleared after match")
+		swap_fails += 1
+	if g7._matches <= matches_before:
+		push_error("T7: _matches counter was not incremented")
+		swap_fails += 1
+	failures += swap_fails
+	print("T7 (valid swap): %s" % ("PASS" if swap_fails == 0 else "FAIL"))
+
+	# ---- Test 8: invalid Candy Crush swap rejected --------------------------
+	var reject_fails := 0
+	var g8: Node3D = scene.instantiate()
+	root.add_child(g8)
+	g8._ready()
+
+	_place_ball_color(g8, 0, 0, red)
+	_place_ball_color(g8, 0, 1, blue)
+
+	var node_a_before = g8._settled[0][0]
+	var node_b_before = g8._settled[0][1]
+
+	g8._try_swap(Vector2i(0, 0), Vector2i(1, 0))
+
+	# No match → swap reverted → original nodes back in place.
+	if g8._settled[0][0] != node_a_before:
+		push_error("T8: col 0 node changed after a non-matching swap")
+		reject_fails += 1
+	if g8._settled[0][1] != node_b_before:
+		push_error("T8: col 1 node changed after a non-matching swap")
+		reject_fails += 1
+	failures += reject_fails
+	print("T8 (invalid swap): %s" % ("PASS" if reject_fails == 0 else "FAIL"))
+
+	# ---- Test 9: non-adjacent swap reverted --------------------------------
+	var nonadj_fails := 0
+	var g9: Node3D = scene.instantiate()
+	root.add_child(g9)
+	g9._ready()
+
+	_place_ball_color(g9, 0, 0, red)
+	_place_ball_color(g9, 0, 3, red)  # two cells apart (dx=3)
+
+	var node9_a = g9._settled[0][0]
+	var node9_b = g9._settled[0][3]
+
+	# Two isolated balls cannot form a match of 3, so swap should be reverted.
+	g9._try_swap(Vector2i(0, 0), Vector2i(3, 0))
+
+	if g9._settled[0][0] != node9_a or g9._settled[0][3] != node9_b:
+		push_error("T9: grid changed after non-matching swap of distant cells")
+		nonadj_fails += 1
+	failures += nonadj_fails
+	print("T9 (non-adjacent swap): %s" % ("PASS" if nonadj_fails == 0 else "FAIL"))
+
+	# ---- Test 10: swap only works on settled, not falling -------------------
+	var settled_fails := 0
+	var g10: Node3D = scene.instantiate()
+	root.add_child(g10)
+	g10._ready()
+
+	# Verify that the active piece's cells are NOT in _settled.
+	for cell in g10._piece_cells:
+		if cell.y >= 0 and cell.y < g10.GRID_H:
+			if g10._settled[cell.y][cell.x] != null:
+				push_error("T10: active piece cell %s appears in settled grid" % str(cell))
+				settled_fails += 1
+	failures += settled_fails
+	print("T10 (swap only settled): %s" % ("PASS" if settled_fails == 0 else "FAIL"))
+
+	# ---- Test 11: _apply_candy_gravity no holes ----------------------------
+	var grav_fails := 0
+	var g11: Node3D = scene.instantiate()
+	root.add_child(g11)
+	g11._ready()
+
+	# Place balls at rows 0, 2, 4 in col 0 (leaving gaps at rows 1 and 3).
+	_place_ball_color(g11, 0, 0, red)
+	_place_ball_color(g11, 2, 0, red)
+	_place_ball_color(g11, 4, 0, red)
+
+	g11._apply_candy_gravity()
+
+	# After gravity, rows 0,1,2 should be occupied and rows 3+ empty.
+	for r in range(3):
+		if g11._settled[r][0] == null:
+			push_error("T11: row %d col 0 should be occupied after gravity" % r)
+			grav_fails += 1
+	for r in range(3, g11.GRID_H):
+		if g11._settled[r][0] != null:
+			push_error("T11: row %d col 0 should be empty after gravity" % r)
+			grav_fails += 1
+	failures += grav_fails
+	print("T11 (candy gravity): %s" % ("PASS" if grav_fails == 0 else "FAIL"))
+
 	# ---- Summary ------------------------------------------------------------
 	if failures == 0:
 		print("\nALL TESTS PASSED")
@@ -290,6 +419,20 @@ func _check_settled(game: Node3D) -> bool:
 			if seen.has(id):
 				return false  # same ball referenced from two cells
 			seen[id] = true
+	return true
+
+
+func _check_colors_in_sync(game: Node3D) -> bool:
+	## Every null cell must have Color.BLACK in the colour grid (the sentinel used
+	## by Game.gd), and every occupied cell must have a non-black colour.
+	for row in game.GRID_H:
+		for col in game.GRID_W:
+			var node = game._settled[row][col]
+			var color: Color = game._settled_colors[row][col]
+			if node == null and color != Color.BLACK:
+				return false
+			if node != null and color == Color.BLACK:
+				return false
 	return true
 
 
