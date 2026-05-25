@@ -24,6 +24,12 @@ extends Node3D
 ## When [member auto_play] is enabled (the default) a lightweight heuristic
 ## steers each piece toward the column that keeps the stack flat and clears
 ## rows. With it disabled, pieces simply drop down the centre.
+##
+## The animated retrowave background is rendered via [Background] on a
+## CanvasLayer at layer -1 (behind all 3D content).  The 3D environment uses a
+## transparent background so the canvas shines through.  To swap themes as the
+## player progresses, call [method _background.set_theme] with one of the
+## [constant Background.THEME_*] dictionaries.
 
 # --- Board configuration -----------------------------------------------------
 const GRID_W := 8        # columns
@@ -104,6 +110,7 @@ var _ball_mesh: SphereMesh
 var _lines_label: Label
 var _freeze_label: Label          # shows "FROZEN!" while freeze is active
 var _matches_label: Label         # HUD label for match count
+var _background: Background
 
 # --- Candy Crush selection state ---------------------------------------------
 ## The grid cell of the currently selected settled ball, or Vector2i(-1,-1) if
@@ -117,6 +124,7 @@ var _selection_highlight: MeshInstance3D
 
 func _ready() -> void:
 	randomize()
+	_build_background()   # must come before _build_environment so layers stack correctly
 	_build_environment()
 	_build_camera()
 	_build_lights()
@@ -861,13 +869,23 @@ func _animate_piece_materials() -> void:
 
 
 # --- Scene construction ------------------------------------------------------
+func _build_background() -> void:
+	_background = Background.new()
+	add_child(_background)
+	# Default theme is retrowave (neon grid + orange sunset) — no extra call needed.
+	# To change the theme dynamically (e.g., after N lines cleared) call:
+	#   _background.set_theme(Background.THEME_PLASMA)
+
+
 func _build_environment() -> void:
 	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.08, 0.06, 0.13)
+	# Use a transparent (canvas) clear so the retrowave CanvasLayer at layer -1
+	# is visible behind the 3D scene.  The canvas shader provides the backdrop.
+	env.background_mode = Environment.BG_CANVAS
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.45, 0.42, 0.6)
-	env.ambient_light_energy = 0.6
+	# Warm purple ambient to complement the retrowave palette.
+	env.ambient_light_color = Color(0.45, 0.30, 0.65)
+	env.ambient_light_energy = 0.7
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
@@ -900,13 +918,17 @@ func _build_lights() -> void:
 
 
 func _build_back_panel() -> void:
+	# A semi-transparent dark panel behind the candy balls so they read clearly
+	# against the bright retrowave background, while still letting the animated
+	# grid and sun glow through around the edges.
 	var panel := MeshInstance3D.new()
 	var box := BoxMesh.new()
 	box.size = Vector3(GRID_W + 0.6, GRID_H + 0.6, 0.4)
 	panel.mesh = box
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.12, 0.10, 0.18)
-	mat.roughness = 0.9
+	mat.albedo_color = Color(0.06, 0.04, 0.12, 0.72)  # dark violet, 72 % opaque
+	mat.roughness = 0.95
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	panel.material_override = mat
 	panel.position = Vector3(0, 0, -0.7)
 	add_child(panel)
