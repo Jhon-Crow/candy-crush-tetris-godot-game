@@ -61,19 +61,19 @@ func _initialize() -> void:
 	# Part 2: manual mode — left/right movement and hard drop.
 	# -------------------------------------------------------------------------
 	game.auto_play = false
-	var start_x := game._piece_base.x
+	var start_x: int = game._piece_base.x
 
 	# Move left; verify column decreased (or stayed if already at left edge).
 	game._try_move(-1)
-	var after_left := game._piece_base.x
+	var after_left: int = game._piece_base.x
 	if after_left > start_x:
 		push_error("FAIL [manual] Moving left increased x: %d -> %d" % [start_x, after_left])
 		failures += 1
 
 	# Move right; verify column increased (or stayed if at right edge).
-	var before_right := game._piece_base.x
+	var before_right: int = game._piece_base.x
 	game._try_move(1)
-	var after_right := game._piece_base.x
+	var after_right: int = game._piece_base.x
 	if after_right < before_right:
 		push_error("FAIL [manual] Moving right decreased x: %d -> %d" % [before_right, after_right])
 		failures += 1
@@ -84,7 +84,6 @@ func _initialize() -> void:
 		failures += 1
 
 	# Hard drop: piece should settle instantly and a new piece should spawn.
-	var pre_drop_lines := game._lines
 	game._hard_drop()
 	if not game._is_valid(game._piece_cells):
 		push_error("FAIL [manual] Invalid piece after hard drop: %s" % str(game._piece_cells))
@@ -93,13 +92,13 @@ func _initialize() -> void:
 	# -------------------------------------------------------------------------
 	# Part 3: toggle auto_play via _toggle_auto_play().
 	# -------------------------------------------------------------------------
-	var before := game.auto_play
+	var before_toggle: bool = game.auto_play
 	game._toggle_auto_play()
-	if game.auto_play == before:
+	if game.auto_play == before_toggle:
 		push_error("FAIL [toggle] auto_play did not change after _toggle_auto_play()")
 		failures += 1
 	game._toggle_auto_play()
-	if game.auto_play != before:
+	if game.auto_play != before_toggle:
 		push_error("FAIL [toggle] auto_play did not restore after second _toggle_auto_play()")
 		failures += 1
 
@@ -122,9 +121,9 @@ func _initialize() -> void:
 
 	# Score a placement directly over the gap (base_x = 0 so cells 0-3 cover
 	# the gap at x=2,3 and land on settled cells).
-	var score_gap  := game._score_placement(Vector2i(0, 1))
+	var score_gap: float = game._score_placement(Vector2i(0, 1))
 	# Score a placement at the far right column (no floor neighbours on the left).
-	var score_free := game._score_placement(Vector2i(game.GRID_W - 4, 2))
+	var score_free: float = game._score_placement(Vector2i(game.GRID_W - 4, 2))
 	if score_gap <= score_free:
 		push_error("FAIL [contact] Gap placement (%.3f) should score higher than free column (%.3f)" % [score_gap, score_free])
 		failures += 1
