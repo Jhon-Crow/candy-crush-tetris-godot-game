@@ -39,3 +39,9 @@ jobs:
           # The test script calls quit(0) on success and quit(1) on failure;
           # propagate that exit code to the job.
           godot --headless --script tests/test_game_logic.gd
+
+      - name: Run OOP unit tests
+        run: |
+          set -euo pipefail
+          # OOP unit tests verify each subsystem class in isolation.
+          godot --headless --script tests/test_oop.gd
