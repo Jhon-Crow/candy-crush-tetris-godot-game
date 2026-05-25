@@ -130,8 +130,9 @@ func _spawn_piece() -> void:
 	_target_x = _best_target_column() if auto_play else _piece_base.x
 
 	_piece_nodes = []
+	var piece_color := COLORS[randi() % COLORS.size()]
 	for o in shape:
-		var ball := _make_ball(COLORS[randi() % COLORS.size()])
+		var ball := _make_ball(piece_color)
 		# Start one cell higher so the piece glides into view.
 		ball.position = _cell_to_world(_piece_base + o + Vector2i(0, 1))
 		_piece_nodes.append(ball)
