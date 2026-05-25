@@ -1,14 +1,18 @@
 extends Node3D
-## Candy Crush + Tetris — primitive auto-falling implementation with
-## Candy Crush swap mechanics for settled balls.
+## Candy Crush + Tetris — primitive auto-falling implementation with special balls
+## and Candy Crush swap mechanics for settled balls.
 ##
 ## Tetromino pieces made of multicoloured candy balls fall automatically down a
 ## grid. The game is played on a flat playfield, but everything is rendered in a
-## true 3D scene (real sphere meshes, lighting and shadows) so the visuals can be
-## elaborated on later.
+## true 3D scene (real sphere meshes, lighting and shadows).
 ##
-## When [member auto_play] is enabled (the default) a lightweight heuristic steers
-## each piece toward the column that keeps the stack flat and clears rows.
+## Special Candy Crush-style balls spawn randomly and trigger effects when a
+## piece locks into the settled grid:
+##   BOMB      — clears all cells within a Chebyshev radius of 2
+##   RAINBOW   — clears every settled ball whose colour matches any ball in the
+##               locked piece
+##   FREEZE    — slows the fall speed for several seconds
+##   LIGHTNING — clears the entire column the ball lands in
 ##
 ## **Candy Crush mechanic:** once a piece has landed (settled), the player can
 ## click/tap on any two adjacent settled balls to swap them. A swap is only
@@ -16,15 +20,32 @@ extends Node3D
 ## column (just like the original Candy Crush). Matched balls are removed and
 ## balls above fall down to fill the gaps. The mechanic never applies to balls
 ## that are still falling as part of the active piece.
+##
+## When [member auto_play] is enabled (the default) a lightweight heuristic
+## steers each piece toward the column that keeps the stack flat and clears
+## rows. With it disabled, pieces simply drop down the centre.
 
 # --- Board configuration -----------------------------------------------------
 const GRID_W := 8        # columns
 const GRID_H := 16       # rows (row 0 = bottom)
 const CELL := 1.0        # world units per cell
-const FALL_INTERVAL := 0.30  # seconds between downward steps
+const FALL_INTERVAL := 0.30  # seconds between downward steps (normal speed)
+const FALL_INTERVAL_FROZEN := 1.20  # slowed fall interval during freeze effect
 
 ## When true, pieces are automatically steered toward a good landing column.
 @export var auto_play := true
+
+## Probability (0–1) that any individual ball in a piece is a special ball.
+@export var special_ball_chance := 0.15
+
+## Duration in seconds of the freeze (slow-fall) effect.
+@export var freeze_duration := 4.0
+
+## Bomb effect radius in cells (Chebyshev / max-norm distance).
+@export var bomb_radius := 2
+
+# --- Ball type enum ----------------------------------------------------------
+enum BallType { NORMAL, BOMB, RAINBOW, FREEZE, LIGHTNING }
 
 # Candy palette (bright, saturated sweets).
 const COLORS := [
@@ -60,17 +81,28 @@ const W_BUMPY := -0.18
 
 # --- Runtime state -----------------------------------------------------------
 var _settled: Array = []          # _settled[row][col] -> MeshInstance3D or null
-var _settled_colors: Array = []   # _settled_colors[row][col] -> Color (parallel)
+var _settled_types: Array = []    # _settled_types[row][col] -> BallType (mirrors _settled)
+var _settled_colors: Array = []   # _settled_colors[row][col] -> Color (mirrors _settled)
+
 var _piece_offsets: Array = []    # Array[Vector2i] shape offsets of active piece
 var _piece_base := Vector2i.ZERO  # bottom-left anchor of the active piece
 var _piece_nodes: Array = []      # Array[MeshInstance3D] parallel to _piece_offsets
 var _piece_cells: Array = []      # cached absolute cells (= base + offsets)
+var _piece_types: Array = []      # Array[BallType] parallel to _piece_offsets
+var _piece_colors: Array = []     # Array[Color] parallel to _piece_offsets
 var _target_x := 0                # auto-player's desired anchor column
+
 var _fall_timer := 0.0
+var _freeze_timer := 0.0          # > 0 when a freeze effect is active
+var _anim_time := 0.0             # runs continuously for material animations
+
 var _lines := 0
 var _matches := 0                 # Candy Crush matches made
+var _specials_triggered := 0      # HUD counter for special effects fired
+
 var _ball_mesh: SphereMesh
 var _lines_label: Label
+var _freeze_label: Label          # shows "FROZEN!" while freeze is active
 var _matches_label: Label         # HUD label for match count
 
 # --- Candy Crush selection state ---------------------------------------------
@@ -101,10 +133,25 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	_anim_time += delta
+
+	# Animate special-ball materials in the active piece.
+	_animate_piece_materials()
+
+	# Update freeze timer.
+	if _freeze_timer > 0.0:
+		_freeze_timer -= delta
+		if _freeze_timer <= 0.0:
+			_freeze_timer = 0.0
+			_update_hud()
+
+	var interval := FALL_INTERVAL_FROZEN if _freeze_timer > 0.0 else FALL_INTERVAL
+
 	_fall_timer += delta
-	if _fall_timer >= FALL_INTERVAL:
-		_fall_timer -= FALL_INTERVAL
+	if _fall_timer >= interval:
+		_fall_timer -= interval
 		_step()
+
 	# Smoothly glide active balls toward their logical grid position.
 	var speed := CELL / FALL_INTERVAL * 1.6
 	for i in _piece_nodes.size():
@@ -223,15 +270,19 @@ func _try_swap(cell_a: Vector2i, cell_b: Vector2i) -> void:
 	_update_hud()
 
 
-## Swap the two settled entries (node + colour) in the grid and update 3D positions.
+## Swap the two settled entries (node + type + colour) in the grid and update 3D positions.
 func _do_swap(cell_a: Vector2i, cell_b: Vector2i) -> void:
 	var node_a: MeshInstance3D = _settled[cell_a.y][cell_a.x]
 	var node_b: MeshInstance3D = _settled[cell_b.y][cell_b.x]
+	var type_a: BallType = _settled_types[cell_a.y][cell_a.x]
+	var type_b: BallType = _settled_types[cell_b.y][cell_b.x]
 	var color_a: Color = _settled_colors[cell_a.y][cell_a.x]
 	var color_b: Color = _settled_colors[cell_b.y][cell_b.x]
 
 	_settled[cell_a.y][cell_a.x] = node_b
 	_settled[cell_b.y][cell_b.x] = node_a
+	_settled_types[cell_a.y][cell_a.x] = type_b
+	_settled_types[cell_b.y][cell_b.x] = type_a
 	_settled_colors[cell_a.y][cell_a.x] = color_b
 	_settled_colors[cell_b.y][cell_b.x] = color_a
 
@@ -293,7 +344,8 @@ func _clear_matches(cells: Array) -> void:
 		if node != null:
 			node.queue_free()
 		_settled[cell.y][cell.x] = null
-		_settled_colors[cell.y][cell.x] = Color.TRANSPARENT
+		_settled_types[cell.y][cell.x] = BallType.NORMAL
+		_settled_colors[cell.y][cell.x] = Color.BLACK
 
 
 ## After matches are cleared, slide settled balls downward to fill gaps
@@ -305,17 +357,19 @@ func _apply_candy_gravity() -> void:
 			if _settled[read_row][col] != null:
 				if read_row != write_row:
 					_settled[write_row][col] = _settled[read_row][col]
+					_settled_types[write_row][col] = _settled_types[read_row][col]
 					_settled_colors[write_row][col] = _settled_colors[read_row][col]
 					_settled[read_row][col] = null
-					_settled_colors[read_row][col] = Color.TRANSPARENT
+					_settled_types[read_row][col] = BallType.NORMAL
+					_settled_colors[read_row][col] = Color.BLACK
 					# Snap the 3D mesh to its new grid position immediately.
 					_settled[write_row][col].position = _cell_to_world(Vector2i(col, write_row))
 				write_row += 1
-		# Clear any leftover cells above write_row (there should be none, but
-		# defensive cleanup just in case).
+		# Clear any leftover cells above write_row.
 		for r in range(write_row, GRID_H):
 			_settled[r][col] = null
-			_settled_colors[r][col] = Color.TRANSPARENT
+			_settled_types[r][col] = BallType.NORMAL
+			_settled_colors[r][col] = Color.BLACK
 
 
 # --- Selection highlight ------------------------------------------------------
@@ -383,33 +437,141 @@ func _spawn_piece() -> void:
 	_target_x = _best_target_column() if auto_play else _piece_base.x
 
 	_piece_nodes = []
+	_piece_types = []
+	_piece_colors = []
 	for o in shape:
-		var ball := _make_ball(COLORS[randi() % COLORS.size()])
+		var btype: BallType = _random_ball_type()
+		var color: Color = COLORS[randi() % COLORS.size()]
+		var ball := _make_ball(color, btype)
 		# Start one cell higher so the piece glides into view.
 		ball.position = _cell_to_world(_piece_base + o + Vector2i(0, 1))
 		_piece_nodes.append(ball)
+		_piece_types.append(btype)
+		_piece_colors.append(color)
 	_refresh_cells()
 
 	# If the spawn space is occupied, the board has overflowed. Clear the
-	# settled balls and keep this fresh piece (which now fits on the empty
-	# board) so the demo restarts seamlessly.
+	# settled balls and keep this fresh piece so the demo restarts seamlessly.
 	if not _is_valid(_piece_cells):
 		_reset_board()
 
 
 func _lock_piece() -> void:
+	# Collect colors of all special balls in this piece for the rainbow effect.
+	var piece_colors_set: Array = []
+	for c in _piece_colors:
+		if not piece_colors_set.has(c):
+			piece_colors_set.append(c)
+
 	for i in _piece_cells.size():
 		var cell: Vector2i = _piece_cells[i]
 		var node: MeshInstance3D = _piece_nodes[i]
+		var btype: BallType = _piece_types[i]
+		var bcolor: Color = _piece_colors[i]
 		node.position = _cell_to_world(cell)
 		if cell.y >= 0 and cell.y < GRID_H:
 			_settled[cell.y][cell.x] = node
-			# Record the ball's colour in the parallel colour grid so the
-			# Candy Crush match logic can compare without reading material data.
-			var mat := node.material_override as StandardMaterial3D
-			_settled_colors[cell.y][cell.x] = mat.albedo_color if mat != null else Color.WHITE
+			_settled_types[cell.y][cell.x] = btype
+			_settled_colors[cell.y][cell.x] = bcolor
+
+	# Fire special effects for any special balls that landed.
+	for i in _piece_cells.size():
+		var cell: Vector2i = _piece_cells[i]
+		var btype: BallType = _piece_types[i]
+		if btype == BallType.BOMB:
+			_effect_bomb(cell)
+		elif btype == BallType.RAINBOW:
+			_effect_rainbow(piece_colors_set)
+		elif btype == BallType.FREEZE:
+			_effect_freeze()
+		elif btype == BallType.LIGHTNING:
+			_effect_lightning(cell.x)
+
 	_piece_nodes = []
 	_piece_cells = []
+	_piece_types = []
+	_piece_colors = []
+
+
+# --- Special ball effects ----------------------------------------------------
+
+## BOMB: clears every settled cell within [member bomb_radius] (Chebyshev dist).
+func _effect_bomb(center: Vector2i) -> void:
+	_specials_triggered += 1
+	for row in GRID_H:
+		for col in GRID_W:
+			if _settled[row][col] != null:
+				var dist := maxi(absi(col - center.x), absi(row - center.y))
+				if dist <= bomb_radius:
+					_settled[row][col].queue_free()
+					_settled[row][col] = null
+					_settled_types[row][col] = BallType.NORMAL
+					_settled_colors[row][col] = Color.BLACK
+	_apply_gravity_to_settled()
+	_update_hud()
+
+
+## RAINBOW: clears every settled ball whose colour matches any colour in the
+## locked piece (piece_colors is the set of distinct colours in the piece).
+func _effect_rainbow(piece_colors: Array) -> void:
+	_specials_triggered += 1
+	for row in GRID_H:
+		for col in GRID_W:
+			if _settled[row][col] != null:
+				if piece_colors.has(_settled_colors[row][col]):
+					_settled[row][col].queue_free()
+					_settled[row][col] = null
+					_settled_types[row][col] = BallType.NORMAL
+					_settled_colors[row][col] = Color.BLACK
+	_apply_gravity_to_settled()
+	_update_hud()
+
+
+## FREEZE: activates the slow-fall effect for [member freeze_duration] seconds.
+func _effect_freeze() -> void:
+	_specials_triggered += 1
+	_freeze_timer = freeze_duration
+	_update_hud()
+
+
+## LIGHTNING: clears every settled ball in the given column.
+func _effect_lightning(col: int) -> void:
+	_specials_triggered += 1
+	for row in GRID_H:
+		if _settled[row][col] != null:
+			_settled[row][col].queue_free()
+			_settled[row][col] = null
+			_settled_types[row][col] = BallType.NORMAL
+			_settled_colors[row][col] = Color.BLACK
+	_apply_gravity_to_settled()
+	_update_hud()
+
+
+## Applies gravity to all settled balls: any ball that has empty space below it
+## falls down until it lands on the bottom or on another settled ball.
+## This is called after special effects (bomb, rainbow, lightning) clear cells,
+## so that settled balls do not float in mid-air.
+func _apply_gravity_to_settled() -> void:
+	# Process columns independently — each ball in a column falls as far down as
+	# it can without overlapping another settled ball.
+	for col in GRID_W:
+		# Scan from bottom (row 0) upward, compacting balls toward row 0.
+		var write_row := 0  # next free row in this column
+		for row in GRID_H:
+			if _settled[row][col] != null:
+				if row != write_row:
+					# Move the ball from row → write_row.
+					_settled[write_row][col] = _settled[row][col]
+					_settled_types[write_row][col] = _settled_types[row][col]
+					_settled_colors[write_row][col] = _settled_colors[row][col]
+					_settled[row][col] = null
+					_settled_types[row][col] = BallType.NORMAL
+					_settled_colors[row][col] = Color.BLACK
+					# Snap the mesh to its new world position.
+					var node: MeshInstance3D = _settled[write_row][col]
+					if node != null:
+						node.position = _cell_to_world(Vector2i(col, write_row))
+				write_row += 1
 
 
 func _clear_full_rows() -> void:
@@ -424,18 +586,21 @@ func _clear_full_rows() -> void:
 			for col in GRID_W:
 				_settled[row][col].queue_free()
 				_settled[row][col] = null
-				_settled_colors[row][col] = Color.TRANSPARENT
+				_settled_types[row][col] = BallType.NORMAL
+				_settled_colors[row][col] = Color.BLACK
 			# Shift every row above down by one.
 			for r in range(row, GRID_H - 1):
 				for col in GRID_W:
 					var node: MeshInstance3D = _settled[r + 1][col]
 					_settled[r][col] = node
+					_settled_types[r][col] = _settled_types[r + 1][col]
 					_settled_colors[r][col] = _settled_colors[r + 1][col]
 					if node != null:
 						node.position = _cell_to_world(Vector2i(col, r))
 			for col in GRID_W:
 				_settled[GRID_H - 1][col] = null
-				_settled_colors[GRID_H - 1][col] = Color.TRANSPARENT
+				_settled_types[GRID_H - 1][col] = BallType.NORMAL
+				_settled_colors[GRID_H - 1][col] = Color.BLACK
 			_lines += 1
 			_update_hud()
 			# Re-check the same row index (it now holds the row that fell down).
@@ -451,7 +616,8 @@ func _reset_board() -> void:
 			if _settled[row][col] != null:
 				_settled[row][col].queue_free()
 				_settled[row][col] = null
-			_settled_colors[row][col] = Color.TRANSPARENT
+			_settled_types[row][col] = BallType.NORMAL
+			_settled_colors[row][col] = Color.BLACK
 	_lines = 0
 	_update_hud()
 
@@ -535,14 +701,18 @@ func _score_placement(base: Vector2i) -> float:
 # --- Helpers -----------------------------------------------------------------
 func _init_grid() -> void:
 	_settled = []
+	_settled_types = []
 	_settled_colors = []
 	for row in GRID_H:
 		var line: Array = []
+		var type_line: Array = []
 		var color_line: Array = []
 		for col in GRID_W:
 			line.append(null)
-			color_line.append(Color.TRANSPARENT)
+			type_line.append(BallType.NORMAL)
+			color_line.append(Color.BLACK)
 		_settled.append(line)
+		_settled_types.append(type_line)
 		_settled_colors.append(color_line)
 
 
@@ -587,21 +757,107 @@ func _cell_to_world(cell: Vector2i) -> Vector3:
 	return Vector3(x, y, 0.0)
 
 
-func _make_ball(color: Color) -> MeshInstance3D:
+## Returns a randomly chosen BallType, respecting [member special_ball_chance].
+func _random_ball_type() -> BallType:
+	if randf() >= special_ball_chance:
+		return BallType.NORMAL
+	# Equal probability among the four special types.
+	var r := randi() % 4
+	match r:
+		0: return BallType.BOMB
+		1: return BallType.RAINBOW
+		2: return BallType.FREEZE
+		_: return BallType.LIGHTNING
+
+
+func _make_ball(color: Color, btype: BallType = BallType.NORMAL) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	mi.mesh = _ball_mesh
+	mi.material_override = _make_material(color, btype)
+	add_child(mi)
+	return mi
+
+
+func _make_material(color: Color, btype: BallType) -> StandardMaterial3D:
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.metallic = 0.0
 	mat.roughness = 0.22
 	mat.rim_enabled = true
 	mat.rim = 0.5
 	mat.emission_enabled = true
-	mat.emission = color
-	mat.emission_energy_multiplier = 0.22
-	mi.material_override = mat
-	add_child(mi)
-	return mi
+
+	match btype:
+		BallType.NORMAL:
+			mat.albedo_color = color
+			mat.metallic = 0.0
+			mat.roughness = 0.22
+			mat.emission = color
+			mat.emission_energy_multiplier = 0.22
+
+		BallType.BOMB:
+			# Dark sphere with a hot red-orange glow — looks dangerous.
+			mat.albedo_color = Color(0.12, 0.08, 0.08)
+			mat.metallic = 0.4
+			mat.roughness = 0.55
+			mat.emission = Color("ff4500")
+			mat.emission_energy_multiplier = 2.0
+
+		BallType.RAINBOW:
+			# Bright white with intense multi-colour emission (starts white,
+			# animated to cycle colours in _process).
+			mat.albedo_color = Color(1.0, 1.0, 1.0)
+			mat.metallic = 0.0
+			mat.roughness = 0.15
+			mat.emission = Color(1.0, 1.0, 1.0)
+			mat.emission_energy_multiplier = 1.5
+
+		BallType.FREEZE:
+			# Icy blue tint, frosted surface.
+			mat.albedo_color = Color(0.55, 0.85, 1.0)
+			mat.metallic = 0.1
+			mat.roughness = 0.85
+			mat.emission = Color("00cfff")
+			mat.emission_energy_multiplier = 1.0
+
+		BallType.LIGHTNING:
+			# Bright yellow with extreme emission — electric.
+			mat.albedo_color = Color(1.0, 1.0, 0.1)
+			mat.metallic = 0.0
+			mat.roughness = 0.10
+			mat.emission = Color(1.0, 1.0, 0.0)
+			mat.emission_energy_multiplier = 3.0
+
+	return mat
+
+
+## Animate the materials of special balls in the active piece each frame.
+func _animate_piece_materials() -> void:
+	for i in _piece_nodes.size():
+		var btype: BallType = _piece_types[i]
+		if btype == BallType.NORMAL:
+			continue
+		var node: MeshInstance3D = _piece_nodes[i]
+		var mat: StandardMaterial3D = node.material_override as StandardMaterial3D
+		if mat == null:
+			continue
+
+		match btype:
+			BallType.BOMB:
+				# Pulse emission between dim and bright.
+				var pulse := (sin(_anim_time * 6.0) + 1.0) * 0.5  # 0..1
+				mat.emission_energy_multiplier = lerp(1.0, 4.0, pulse)
+
+			BallType.RAINBOW:
+				# Cycle hue continuously.
+				var hue := fmod(_anim_time * 0.4, 1.0)
+				var rainbow := Color.from_hsv(hue, 1.0, 1.0)
+				mat.emission = rainbow
+				mat.albedo_color = rainbow.lightened(0.3)
+				mat.emission_energy_multiplier = 1.5
+
+			BallType.LIGHTNING:
+				# Fast flicker.
+				var flicker := (sin(_anim_time * 20.0) + 1.0) * 0.5
+				mat.emission_energy_multiplier = lerp(2.0, 5.0, flicker)
 
 
 # --- Scene construction ------------------------------------------------------
@@ -673,17 +929,38 @@ func _build_hud() -> void:
 	_lines_label.position = Vector2(24, 64)
 	layer.add_child(_lines_label)
 
+	_freeze_label = Label.new()
+	_freeze_label.add_theme_font_size_override("font_size", 26)
+	_freeze_label.add_theme_color_override("font_color", Color("00cfff"))
+	_freeze_label.position = Vector2(24, 100)
+	_freeze_label.visible = false
+	layer.add_child(_freeze_label)
+
 	_matches_label = Label.new()
 	_matches_label.add_theme_font_size_override("font_size", 22)
 	_matches_label.add_theme_color_override("font_color", Color("f783ac"))
-	_matches_label.position = Vector2(24, 100)
+	_matches_label.position = Vector2(24, 140)
 	layer.add_child(_matches_label)
+
+	# Legend for special balls.
+	var legend := Label.new()
+	legend.text = "💣 Bomb  🌈 Rainbow  ❄️ Freeze  ⚡ Lightning"
+	legend.add_theme_font_size_override("font_size", 18)
+	legend.add_theme_color_override("font_color", Color("cccccc"))
+	legend.position = Vector2(24, 174)
+	layer.add_child(legend)
 
 	_update_hud()
 
 
 func _update_hud() -> void:
 	if _lines_label != null:
-		_lines_label.text = "Lines cleared: %d" % _lines
+		_lines_label.text = "Lines: %d  |  Specials: %d" % [_lines, _specials_triggered]
+	if _freeze_label != null:
+		if _freeze_timer > 0.0:
+			_freeze_label.text = "❄️ FROZEN! (%.1fs)" % _freeze_timer
+			_freeze_label.visible = true
+		else:
+			_freeze_label.visible = false
 	if _matches_label != null:
 		_matches_label.text = "Candy matches: %d" % _matches
