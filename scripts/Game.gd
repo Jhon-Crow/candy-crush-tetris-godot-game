@@ -72,7 +72,7 @@ var _piece_cells: Array = []      # cached absolute cells (= base + offsets)
 var _target_x := 0                # auto-player's desired anchor column
 var _fall_timer := 0.0
 var _lines := 0
-var _crystal_mesh: CylinderMesh   # shared low-poly hex-prism mesh for all crystals
+var _crystal_mesh: SphereMesh   # shared mesh for all crystals (SphereMesh for CI compat)
 var _lines_label: Label
 
 
@@ -84,16 +84,12 @@ func _ready() -> void:
 	_build_back_panel()
 	_build_hud()
 	_init_grid()
-	# Build a shared low-polygon CylinderMesh (hexagonal prism) that gives every
-	# piece a clearly faceted crystal / gem silhouette.
-	_crystal_mesh = CylinderMesh.new()
-	_crystal_mesh.top_radius = 0.40
-	_crystal_mesh.bottom_radius = 0.40
-	_crystal_mesh.height = 0.80
-	# 6 radial segments → hexagonal prism; each flat face reads as a crystal
-	# facet. rings = 1 keeps height subdivision minimal.
-	_crystal_mesh.radial_segments = 6
-	_crystal_mesh.rings = 1
+	# SphereMesh: using original mesh type to rule out CylinderMesh CI hang.
+	_crystal_mesh = SphereMesh.new()
+	_crystal_mesh.radius = 0.46
+	_crystal_mesh.height = 0.92
+	_crystal_mesh.radial_segments = 24
+	_crystal_mesh.rings = 12
 	_spawn_piece()
 
 
