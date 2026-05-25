@@ -147,8 +147,8 @@ func _input(event: InputEvent) -> void:
 		_deselect()
 	else:
 		# A second cell was clicked — try to swap if they are adjacent.
-		var dx := abs(hit_cell.x - _selected_cell.x)
-		var dy := abs(hit_cell.y - _selected_cell.y)
+		var dx: int = absi(hit_cell.x - _selected_cell.x)
+		var dy: int = absi(hit_cell.y - _selected_cell.y)
 		if dx + dy == 1:  # exactly one step horizontal or vertical
 			_try_swap(_selected_cell, hit_cell)
 		else:
