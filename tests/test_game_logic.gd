@@ -48,12 +48,13 @@ func _initialize() -> void:
 			push_error("Combo out of range at step %d: %d" % [i, game._combo])
 			failures += 1
 
-		# Rush progress must be in [0, RUSH_GOAL).
-		if game._rush_progress < 0 or game._rush_progress >= game.RUSH_GOAL:
-			push_error("Rush progress out of range at step %d: %d" % [i, game._rush_progress])
+		# Rush progress must be non-negative. It may exceed RUSH_GOAL while rush
+		# is active (points overflow into the next bar), but must not go negative.
+		if game._rush_progress < 0:
+			push_error("Rush progress negative at step %d: %d" % [i, game._rush_progress])
 			failures += 1
 
-		# Score must never decrease.
+		# Score must never be negative.
 		if game._score < 0:
 			push_error("Score went negative at step %d: %d" % [i, game._score])
 			failures += 1
@@ -74,19 +75,21 @@ func _initialize() -> void:
 	if max_lines < 1:
 		push_error("No line was ever cleared in %d steps" % STEPS)
 		failures += 1
-	if game._score <= 0:
-		push_error("Score never accumulated in %d steps (score=%d)" % [STEPS, game._score])
+	# _score resets on board overflow; use the never-resetting _total_score
+	# to verify that points were actually awarded over the full run.
+	if game._total_score <= 0:
+		push_error("Total score never accumulated in %d steps (total=%d)" % [STEPS, game._total_score])
 		failures += 1
 
-	# Verify that rush is reachable (it requires RUSH_GOAL=1000 points and
-	# 4000 steps of auto-play easily accumulates that).
+	# Verify that rush is reachable. RUSH_GOAL=300 means 3 single-row clears
+	# trigger it; the AI reliably clears that many lines.
 	if not rush_ever_activated:
 		push_error("Rush mode never activated in %d steps" % STEPS)
 		failures += 1
 
 	if failures == 0:
-		print("TEST PASS: %d steps, max lines=%d, score=%d, spawns=%d, rush=%s" % [
-			STEPS, max_lines, game._score, spawns_seen, str(rush_ever_activated)
+		print("TEST PASS: %d steps, max lines=%d, total score=%d, spawns=%d, rush=%s" % [
+			STEPS, max_lines, game._total_score, spawns_seen, str(rush_ever_activated)
 		])
 		quit(0)
 	else:

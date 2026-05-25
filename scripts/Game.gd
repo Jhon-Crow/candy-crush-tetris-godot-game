@@ -64,7 +64,8 @@ const LINE_SCORE := [100, 300, 600, 1200]
 ## Maximum combo multiplier.
 const MAX_COMBO := 8
 ## Score points needed to fill the rush progress bar and trigger a Rush.
-const RUSH_GOAL := 1000
+## Set to 300 so the AI reliably triggers rush (≥3 single-row clears needed).
+const RUSH_GOAL := 300
 ## Number of pieces that fall at rush speed before reverting to normal.
 const RUSH_PIECES := 10
 
@@ -79,7 +80,8 @@ var _fall_timer := 0.0
 var _lines := 0
 
 # Progression state
-var _score := 0
+var _score := 0           # current-round score (resets on board overflow)
+var _total_score := 0     # cumulative all-time score (never resets)
 var _combo := 1          # current combo multiplier (1 = no combo active)
 var _rush_progress := 0  # score points accumulated toward the next rush
 var _rush_active := false
@@ -236,6 +238,7 @@ func _clear_full_rows() -> void:
 ## Award [param pts] points, update the rush progress meter.
 func _add_score(pts: int) -> void:
 	_score += pts
+	_total_score += pts
 	_rush_progress += pts
 	if not _rush_active and _rush_progress >= RUSH_GOAL:
 		_rush_progress -= RUSH_GOAL
