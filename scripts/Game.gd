@@ -1,23 +1,29 @@
 extends Node3D
-## Candy Crush + Tetris — primitive auto-falling implementation.
+## Candy Crush + Tetris — manual and automatic control.
 ##
 ## Tetromino pieces made of multicoloured candy balls fall automatically down a
 ## grid. The game is played on a flat playfield, but everything is rendered in a
-## true 3D scene (real sphere meshes, lighting and shadows) so the visuals can be
-## elaborated on later.
+## true 3D scene (real sphere meshes, lighting and shadows).
 ##
-## There is no human input yet. When [member auto_play] is enabled (the default)
-## a lightweight heuristic steers each piece toward the column that keeps the
-## stack flat and clears rows — this is the "automatic control of the falling
-## figures" requested in the issue. With it disabled, pieces simply drop down
-## the centre. Either way, full rows are cleared and the board resets when it
-## overflows.
+## Controls (keyboard):
+##   ← / A            — move piece left  (manual mode)
+##   → / D            — move piece right (manual mode)
+##   ↓ / S            — soft drop (speed up falling)
+##   ↑ / W            — hard drop (instantly land piece)
+##   Space / Enter    — toggle automatic / manual mode
+##
+## Controls (on-screen, also usable on mobile):
+##   ◀ button         — move piece left
+##   ▶ button         — move piece right
+##   ▼ button         — soft drop
+##   "Авто" button    — toggle auto/manual mode
 
 # --- Board configuration -----------------------------------------------------
 const GRID_W := 8        # columns
 const GRID_H := 16       # rows (row 0 = bottom)
 const CELL := 1.0        # world units per cell
-const FALL_INTERVAL := 0.30  # seconds between downward steps
+const FALL_INTERVAL := 0.30  # seconds between downward steps (normal)
+const SOFT_DROP_INTERVAL := 0.06  # seconds between steps during soft drop
 
 ## When true, pieces are automatically steered toward a good landing column.
 @export var auto_play := true
@@ -53,6 +59,8 @@ const W_HEIGHT := -0.51
 const W_LINES := 0.76
 const W_HOLES := -0.36
 const W_BUMPY := -0.18
+# Extra weight for contact area (pieces should slot neatly into gaps).
+const W_CONTACT := 0.20
 
 # --- Runtime state -----------------------------------------------------------
 var _settled: Array = []          # _settled[row][col] -> MeshInstance3D or null
@@ -65,6 +73,17 @@ var _fall_timer := 0.0
 var _lines := 0
 var _ball_mesh: SphereMesh
 var _lines_label: Label
+var _auto_button: CheckButton     # bottom-centre toggle button
+var _soft_drop := false           # true while the down-key / ▼ button is held
+# Mobile on-screen button pressed flags (set/cleared by button signals).
+var _btn_left_held := false
+var _btn_right_held := false
+# One-shot manual horizontal move queued by button press this tick.
+var _manual_dx := 0
+# Prevent Space/Enter from toggling auto_play multiple times in one held press.
+var _toggle_pressed := false
+# Ghost piece nodes (preview of where the piece will land).
+var _ghost_nodes: Array = []
 
 
 func _ready() -> void:
@@ -84,19 +103,49 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	# --- Read held-key soft-drop state ---------------------------------------
+	_soft_drop = Input.is_action_pressed("ui_down")
+
+	var interval := SOFT_DROP_INTERVAL if _soft_drop else FALL_INTERVAL
 	_fall_timer += delta
-	if _fall_timer >= FALL_INTERVAL:
-		_fall_timer -= FALL_INTERVAL
+	if _fall_timer >= interval:
+		_fall_timer -= interval
 		_step()
+
 	# Smoothly glide active balls toward their logical grid position.
 	var speed := CELL / FALL_INTERVAL * 1.6
 	for i in _piece_nodes.size():
 		var node: MeshInstance3D = _piece_nodes[i]
 		node.position = node.position.move_toward(_cell_to_world(_piece_cells[i]), speed * delta)
 
+	# Keep ghost piece in sync.
+	_update_ghost()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	# --- Space / Enter: toggle auto-play mode --------------------------------
+	if event.is_action_pressed("ui_accept"):
+		_toggle_auto_play()
+
+	# --- Hard drop (↑ / W) ---------------------------------------------------
+	if event.is_action_pressed("ui_up") and not auto_play:
+		_hard_drop()
+
+	# --- One-shot left/right move on key-down (manual mode) ------------------
+	if not auto_play:
+		if event.is_action_pressed("ui_left"):
+			_try_move(-1)
+		if event.is_action_pressed("ui_right"):
+			_try_move(1)
+
 
 # --- Game loop ---------------------------------------------------------------
 func _step() -> void:
+	# In manual mode apply any pending one-shot dx from mobile buttons.
+	if not auto_play and _manual_dx != 0:
+		_try_move(_manual_dx)
+		_manual_dx = 0
+
 	var dx := 0
 	if auto_play and _piece_base.x != _target_x:
 		dx = signi(_target_x - _piece_base.x)
@@ -114,6 +163,32 @@ func _step() -> void:
 		_lock_piece()
 		_clear_full_rows()
 		_spawn_piece()
+
+
+## Immediately drop the active piece to its lowest valid position and lock it.
+func _hard_drop() -> void:
+	while _placement_valid(_piece_base + Vector2i(0, -1)):
+		_set_base(_piece_base + Vector2i(0, -1))
+	_lock_piece()
+	_clear_full_rows()
+	_spawn_piece()
+
+
+## Attempt to shift the active piece by [param dx] columns (-1 = left, 1 = right).
+func _try_move(dx: int) -> void:
+	var candidate := _piece_base + Vector2i(dx, 0)
+	if _placement_valid(candidate):
+		_set_base(candidate)
+
+
+## Toggle between manual and automatic play, updating the UI button.
+func _toggle_auto_play() -> void:
+	auto_play = not auto_play
+	if auto_play:
+		_target_x = _best_target_column()
+	if _auto_button != null:
+		_auto_button.button_pressed = auto_play
+	_update_ghost()
 
 
 func _spawn_piece() -> void:
@@ -137,6 +212,9 @@ func _spawn_piece() -> void:
 		_piece_nodes.append(ball)
 	_refresh_cells()
 
+	# Spawn ghost nodes for the new piece.
+	_spawn_ghost()
+
 	# If the spawn space is occupied, the board has overflowed. Clear the
 	# settled balls and keep this fresh piece (which now fits on the empty
 	# board) so the demo restarts seamlessly.
@@ -153,6 +231,7 @@ func _lock_piece() -> void:
 			_settled[cell.y][cell.x] = node
 	_piece_nodes = []
 	_piece_cells = []
+	_clear_ghost()
 
 
 func _clear_full_rows() -> void:
@@ -193,6 +272,49 @@ func _reset_board() -> void:
 				_settled[row][col] = null
 	_lines = 0
 	_update_hud()
+
+
+# --- Ghost piece -------------------------------------------------------------
+
+## Spawn semi-transparent ghost nodes that preview the landing position.
+func _spawn_ghost() -> void:
+	_clear_ghost()
+	for _o in _piece_offsets:
+		var mi := MeshInstance3D.new()
+		mi.mesh = _ball_mesh
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(1, 1, 1, 0.18)
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mi.material_override = mat
+		add_child(mi)
+		_ghost_nodes.append(mi)
+
+
+func _clear_ghost() -> void:
+	for gn in _ghost_nodes:
+		if is_instance_valid(gn):
+			gn.queue_free()
+	_ghost_nodes = []
+
+
+## Reposition ghost nodes to show where the active piece will land.
+func _update_ghost() -> void:
+	if _ghost_nodes.size() != _piece_offsets.size():
+		return
+	# Find the ghost base: drop until the placement is no longer valid.
+	var ghost_base := _piece_base
+	while _placement_valid(ghost_base + Vector2i(0, -1)):
+		ghost_base += Vector2i(0, -1)
+	# Only show the ghost if it is below the current piece position.
+	var show_ghost := (ghost_base.y < _piece_base.y)
+	for i in _ghost_nodes.size():
+		var gn: MeshInstance3D = _ghost_nodes[i]
+		if show_ghost:
+			gn.visible = true
+			gn.position = _cell_to_world(ghost_base + _piece_offsets[i])
+		else:
+			gn.visible = false
 
 
 # --- Auto-player -------------------------------------------------------------
@@ -268,7 +390,30 @@ func _score_placement(base: Vector2i) -> float:
 		if full:
 			lines += 1
 
-	return W_HEIGHT * aggregate + W_LINES * lines + W_HOLES * holes + W_BUMPY * bumpiness
+	var contact := _contact_area(base, occ)
+
+	return (W_HEIGHT * aggregate + W_LINES * lines + W_HOLES * holes
+			+ W_BUMPY * bumpiness + W_CONTACT * contact)
+
+
+## Count cells of the placed piece that touch the floor or an occupied cell.
+## A higher contact area means the piece nestles snugly into existing gaps.
+func _contact_area(base: Vector2i, occ: Array) -> int:
+	var contacts := 0
+	for o in _piece_offsets:
+		var c: Vector2i = base + o
+		# Floor contact.
+		if c.y == 0:
+			contacts += 1
+		elif c.y > 0 and c.y - 1 < GRID_H and occ[c.y - 1][c.x]:
+			contacts += 1
+		# Left neighbour.
+		if c.x > 0 and occ[c.y][c.x - 1]:
+			contacts += 1
+		# Right neighbour.
+		if c.x < GRID_W - 1 and occ[c.y][c.x + 1]:
+			contacts += 1
+	return contacts
 
 
 # --- Helpers -----------------------------------------------------------------
@@ -395,6 +540,7 @@ func _build_hud() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
 
+	# --- Title ---------------------------------------------------------------
 	var title := Label.new()
 	title.text = "CANDY • TETRIS"
 	title.add_theme_font_size_override("font_size", 34)
@@ -402,12 +548,129 @@ func _build_hud() -> void:
 	title.position = Vector2(24, 18)
 	layer.add_child(title)
 
+	# --- Lines cleared counter -----------------------------------------------
 	_lines_label = Label.new()
 	_lines_label.add_theme_font_size_override("font_size", 26)
 	_lines_label.add_theme_color_override("font_color", Color("ffffff"))
 	_lines_label.position = Vector2(24, 64)
 	layer.add_child(_lines_label)
 	_update_hud()
+
+	# --- Controls hint -------------------------------------------------------
+	var hint := Label.new()
+	hint.text = "← → A D: move  ↓ S: faster  ↑ W: drop  Space: auto"
+	hint.add_theme_font_size_override("font_size", 16)
+	hint.add_theme_color_override("font_color", Color(0.7, 0.7, 0.9))
+	hint.position = Vector2(24, 100)
+	layer.add_child(hint)
+
+	# --- "Авто" toggle button (bottom-centre) --------------------------------
+	_auto_button = CheckButton.new()
+	_auto_button.text = "Авто"
+	_auto_button.button_pressed = auto_play
+	_auto_button.add_theme_font_size_override("font_size", 28)
+	_auto_button.add_theme_color_override("font_color", Color("ffd43b"))
+	# Anchor to bottom-centre of the viewport.
+	_auto_button.anchor_left   = 0.5
+	_auto_button.anchor_right  = 0.5
+	_auto_button.anchor_top    = 1.0
+	_auto_button.anchor_bottom = 1.0
+	_auto_button.offset_left   = -80.0
+	_auto_button.offset_right  =  80.0
+	_auto_button.offset_top    = -64.0
+	_auto_button.offset_bottom = -12.0
+	_auto_button.toggled.connect(func(pressed: bool) -> void:
+		if auto_play != pressed:
+			auto_play = pressed
+			if auto_play:
+				_target_x = _best_target_column()
+	)
+	layer.add_child(_auto_button)
+
+	# --- Mobile / touch arrow buttons ----------------------------------------
+	_build_mobile_buttons(layer)
+
+
+## Build on-screen arrow buttons for mobile / touch play. The left and right
+## arrows sit beside the game field; a down arrow sits at the bottom-left.
+func _build_mobile_buttons(layer: CanvasLayer) -> void:
+	# Common style for all mobile buttons.
+	var btn_size := Vector2(80, 80)
+
+	# ◀ Left — left side of screen, vertically centred.
+	var btn_left := Button.new()
+	btn_left.text = "◀"
+	btn_left.add_theme_font_size_override("font_size", 40)
+	btn_left.custom_minimum_size = btn_size
+	btn_left.anchor_left   = 0.0
+	btn_left.anchor_right  = 0.0
+	btn_left.anchor_top    = 0.5
+	btn_left.anchor_bottom = 0.5
+	btn_left.offset_left   =  8.0
+	btn_left.offset_right  = 88.0
+	btn_left.offset_top    = -40.0
+	btn_left.offset_bottom =  40.0
+	btn_left.pressed.connect(func() -> void:
+		if not auto_play:
+			_manual_dx = -1
+	)
+	layer.add_child(btn_left)
+
+	# ▶ Right — right side of screen, vertically centred.
+	var btn_right := Button.new()
+	btn_right.text = "▶"
+	btn_right.add_theme_font_size_override("font_size", 40)
+	btn_right.custom_minimum_size = btn_size
+	btn_right.anchor_left   = 1.0
+	btn_right.anchor_right  = 1.0
+	btn_right.anchor_top    = 0.5
+	btn_right.anchor_bottom = 0.5
+	btn_right.offset_left   = -88.0
+	btn_right.offset_right  =  -8.0
+	btn_right.offset_top    = -40.0
+	btn_right.offset_bottom =  40.0
+	btn_right.pressed.connect(func() -> void:
+		if not auto_play:
+			_manual_dx = 1
+	)
+	layer.add_child(btn_right)
+
+	# ▼ Soft-drop — bottom-left area (above the auto button area).
+	var btn_down := Button.new()
+	btn_down.text = "▼"
+	btn_down.add_theme_font_size_override("font_size", 36)
+	btn_down.custom_minimum_size = btn_size
+	btn_down.anchor_left   = 0.0
+	btn_down.anchor_right  = 0.0
+	btn_down.anchor_top    = 1.0
+	btn_down.anchor_bottom = 1.0
+	btn_down.offset_left   =  8.0
+	btn_down.offset_right  = 88.0
+	btn_down.offset_top    = -88.0
+	btn_down.offset_bottom =  -8.0
+	# Holding this button activates soft drop via _soft_drop flag.
+	btn_down.button_down.connect(func() -> void: _soft_drop = true)
+	btn_down.button_up.connect(func() -> void: _soft_drop = false)
+	layer.add_child(btn_down)
+
+	# ▲ Hard-drop — bottom-right area.
+	var btn_up := Button.new()
+	btn_up.text = "▲"
+	btn_up.add_theme_font_size_override("font_size", 36)
+	btn_up.custom_minimum_size = btn_size
+	btn_up.anchor_left   = 1.0
+	btn_up.anchor_right  = 1.0
+	btn_up.anchor_top    = 1.0
+	btn_up.anchor_bottom = 1.0
+	btn_up.offset_left   = -88.0
+	btn_up.offset_right  =  -8.0
+	btn_up.offset_top    = -88.0
+	btn_up.offset_bottom =  -8.0
+	btn_up.pressed.connect(func() -> void:
+		if not auto_play:
+			_hard_drop()
+	)
+	layer.add_child(btn_up)
 
 
 func _update_hud() -> void:

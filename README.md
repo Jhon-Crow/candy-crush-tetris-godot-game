@@ -6,11 +6,9 @@ rows are cleared. The game is played on a flat 2D playfield, but it is rendered
 in a **true 3D scene** (real sphere meshes, lighting and shadows) so the visuals
 can be elaborated on later.
 
-There is no human input yet — exactly as requested, this is the most primitive
-implementation. Instead, an optional **auto‑player** steers each falling piece
-toward the column that keeps the stack flat (this is the *"automatic control of
-the falling figures"* from the issue). It can be turned off to let pieces drop
-straight down.
+Play manually with keyboard/touch or let the **auto‑player** handle it for you.
+Switch between the two modes at any time with the Space key or the on-screen
+**Авто** toggle button.
 
 | Gameplay | Gameplay (stacking) | Running in the browser |
 |---|---|---|
@@ -31,14 +29,32 @@ straight down.
 * Random candy colours per ball from a 7‑colour sweet palette.
 * Automatic falling on a fixed tick, smooth gliding between cells.
 * Locking, **full‑row clearing**, and automatic board reset on overflow.
-* Optional heuristic **auto‑player** (genetic-tuned four-feature weights) that
-  places pieces.
+* **Manual keyboard controls** — ← → A D to move, ↓ S to soft-drop, ↑ W to
+  hard-drop, Space/Enter to toggle auto/manual mode.
+* **On-screen touch buttons** — ◀ ▶ ▼ ▲ positioned beside the game field for
+  mobile and tablet play.
+* **"Авто" toggle button** at the bottom centre of the screen — shows the
+  current mode and switches it on click/tap.
+* **Ghost piece** — a translucent preview shows where the active piece will land.
+* **Auto‑player** — genetic-tuned heuristic (aggregate height, lines, holes,
+  bumpiness) now augmented with a contact-area term so pieces slot neatly into
+  gaps in the stack.
 * Rendered in 3D: orthographic camera, directional key/fill lights, soft
   shadows, glossy candy materials — a 2D game in a 3D scene.
 * Exports to **HTML5/Web** (single‑threaded, so it runs on GitHub Pages with no
   special cross‑origin headers).
 
-## 🎮 How it works
+## 🎮 Controls
+
+| Action | Keyboard | On-screen button |
+|--------|----------|-----------------|
+| Move left | ← or A | ◀ |
+| Move right | → or D | ▶ |
+| Soft drop (speed up) | ↓ or S | ▼ |
+| Hard drop (instant land) | ↑ or W | ▲ |
+| Toggle auto/manual | Space or Enter | **Авто** (bottom-centre) |
+
+## ⚙️ How it works
 
 The whole scene is built in code from a single‑node scene (`scenes/Main.tscn`
 → `scripts/Game.gd`):
@@ -51,12 +67,17 @@ The whole scene is built in code from a single‑node scene (`scenes/Main.tscn`
 * When a piece can no longer move down it is **locked** into the `_settled`
   grid, full rows are cleared (rows above shift down), and a new piece spawns.
 * If a freshly spawned piece does not fit, the board is cleared and play resumes.
+* In **manual mode**, `_unhandled_input()` handles key-down events for
+  left/right shifts and hard drop; soft drop is polled each frame.
+* The **auto‑player** scores every possible column with a four-feature heuristic
+  (aggregate height, complete lines, holes, bumpiness) plus a contact-area bonus
+  so pieces slot snugly into gaps.
 
-Toggle the auto‑player from the Inspector on the `Main` node (`auto_play`), or in
-code:
+Toggle the auto‑player at runtime:
 
 ```gdscript
-$Main.auto_play = false  # pieces drop straight down the centre
+$Main.auto_play = false  # switch to manual
+$Main._toggle_auto_play()  # flip the mode and sync the UI button
 ```
 
 ## 🗂 Project structure
@@ -70,7 +91,8 @@ scripts/Game.gd            # all gameplay + scene construction + auto-player
 tests/test_game_logic.gd   # headless invariant test (run in CI)
 experiments/screenshot.gd  # offscreen screenshot capture helper
 .github/workflows/         # ci.yml (tests) + deploy.yml (Pages + itch.io)
-docs/case-studies/issue-1/ # research & deep-dive case study
+docs/case-studies/issue-1/ # research & deep-dive case study (web export)
+docs/case-studies/issue-7/ # research & case study (controls & AI)
 docs/screenshots/          # screenshots used above
 ```
 
@@ -105,9 +127,15 @@ isolation headers that GitHub Pages cannot set.
 ## 🧪 Tests
 
 `tests/test_game_logic.gd` drives the fall loop directly for 4000 steps and
-asserts the core invariants (the active piece is always valid, settled balls
-never overlap or leave the grid, and the spawn → lock → line‑clear loop makes
-progress). Run it headlessly:
+asserts:
+- the active piece is always valid (in-bounds, non-overlapping);
+- settled balls never overlap or leave the grid;
+- the spawn → lock → line‑clear loop makes progress;
+- manual left/right movement and hard drop work correctly;
+- toggling auto‑play switches modes;
+- the contact-area AI term prefers snug placements over open columns.
+
+Run it headlessly:
 
 ```bash
 godot --headless --script tests/test_game_logic.gd
@@ -155,11 +183,14 @@ The itch.io step is **optional** and skipped unless you configure it.
 > If `ITCH_USER` / `ITCH_GAME` are not set, the `publish-itch` job is skipped and
 > the rest of the pipeline still runs.
 
-## 📚 Case study
+## 📚 Case studies
 
-A deeper write‑up — issue analysis, prior art, libraries, the web‑export /
-cross‑origin‑isolation trade‑offs, and design decisions — lives in
-[`docs/case-studies/issue-1/`](docs/case-studies/issue-1/README.md).
+Deeper write‑ups live in `docs/case-studies/`:
+
+* [**issue-1**](docs/case-studies/issue-1/README.md) — web export, cross-origin
+  isolation, CI/CD design.
+* [**issue-7**](docs/case-studies/issue-7/README.md) — manual/auto control
+  toggle, mobile on-screen buttons, improved AI contact-area heuristic.
 
 ## License
 
