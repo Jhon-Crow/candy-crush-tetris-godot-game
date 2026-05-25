@@ -1,11 +1,12 @@
 class_name HUD
-## Heads-up display: score labels, freeze indicator, and ball-type legend.
+## Heads-up display: score labels, freeze indicator, matches counter, and ball-type legend.
 ##
 ## All UI nodes are created procedurally and parented to a [CanvasLayer] that
 ## the caller (Game.gd) adds to the scene.
 
 var _lines_label: Label
 var _freeze_label: Label
+var _matches_label: Label
 var _layer: CanvasLayer
 
 
@@ -35,19 +36,27 @@ func _init(parent: Node) -> void:
 	_freeze_label.visible = false
 	_layer.add_child(_freeze_label)
 
+	_matches_label = Label.new()
+	_matches_label.add_theme_font_size_override("font_size", 22)
+	_matches_label.add_theme_color_override("font_color", Color("f783ac"))
+	_matches_label.position = Vector2(24, 140)
+	_layer.add_child(_matches_label)
+
 	var legend := Label.new()
 	legend.text = "💣 Bomb  🌈 Rainbow  ❄️ Freeze  ⚡ Lightning"
 	legend.add_theme_font_size_override("font_size", 18)
 	legend.add_theme_color_override("font_color", Color("cccccc"))
-	legend.position = Vector2(24, 140)
+	legend.position = Vector2(24, 174)
 	_layer.add_child(legend)
 
 
 # --- Updates -----------------------------------------------------------------
-## Refresh the score line.
-func update_score(lines: int, specials: int) -> void:
+## Refresh the score line and matches counter.
+func update_score(lines: int, specials: int, matches: int = 0) -> void:
 	if _lines_label != null:
 		_lines_label.text = "Lines: %d  |  Specials: %d" % [lines, specials]
+	if _matches_label != null:
+		_matches_label.text = "Candy matches: %d" % matches
 
 
 ## Refresh the freeze indicator.
