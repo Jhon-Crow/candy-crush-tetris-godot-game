@@ -478,17 +478,24 @@ func _lock_piece() -> void:
 			_board.set_cell(cell.y, cell.x, node, btype, bcolor)
 
 	# Fire special effects for balls that landed.
+	# Each non-freeze effect clears cells; apply gravity afterwards so no balls float.
+	var any_clearing_effect := false
 	for i in _piece.cells.size():
 		var cell: Vector2i = _piece.cells[i]
 		var btype: int = _piece.types[i]
 		if btype == BallFactory.BallType.BOMB:
 			_effects.apply_bomb(_board, cell, bomb_radius)
+			any_clearing_effect = true
 		elif btype == BallFactory.BallType.RAINBOW:
 			_effects.apply_rainbow(_board, piece_colors_set)
+			any_clearing_effect = true
 		elif btype == BallFactory.BallType.FREEZE:
 			_effects.apply_freeze(freeze_duration)
 		elif btype == BallFactory.BallType.LIGHTNING:
 			_effects.apply_lightning(_board, cell.x)
+			any_clearing_effect = true
+	if any_clearing_effect:
+		_apply_candy_gravity()
 
 	_piece.nodes = []
 	_piece.cells = []
@@ -536,14 +543,18 @@ func _is_valid(cells: Array) -> bool:
 
 
 ## Public wrappers so tests can call effects directly (backward compatibility).
-## The effect_triggered signal handler (_on_effect_triggered) increments
-## _specials_triggered; no double-counting here.
+## Each wrapper applies gravity after clearing so that balls above any gap
+## fall down (matching the upstream monolithic behaviour).  The effect_triggered
+## signal handler (_on_effect_triggered) increments _specials_triggered; no
+## double-counting here.
 func _effect_bomb(center: Vector2i) -> void:
 	_effects.apply_bomb(_board, center, bomb_radius)
+	_apply_candy_gravity()
 
 
 func _effect_rainbow(piece_colors: Array) -> void:
 	_effects.apply_rainbow(_board, piece_colors)
+	_apply_candy_gravity()
 
 
 func _effect_freeze() -> void:
@@ -554,6 +565,7 @@ func _effect_freeze() -> void:
 
 func _effect_lightning(col: int) -> void:
 	_effects.apply_lightning(_board, col)
+	_apply_candy_gravity()
 
 
 ## Gravity for settled balls (used by tests and Candy Crush swap mechanic).
