@@ -6,7 +6,7 @@ extends SceneTree
 ##
 ## Tests:
 ##   1. Core loop invariants over 4 000 steps (piece validity, grid integrity,
-##      line clearing progress).
+##      line clearing progress, score/combo/rush progression).
 ##   2. BOMB effect — clears cells within the configured radius.
 ##   3. RAINBOW effect — clears all settled balls whose colour matches the piece.
 ##   4. FREEZE effect — sets _freeze_timer and slows the effective fall interval.
@@ -28,6 +28,7 @@ func _initialize() -> void:
 	var max_lines := 0
 	var spawns_seen := 0
 	var last_piece = null
+	var rush_ever_activated := false
 
 	for i in range(STEPS):
 		if not game._is_valid(game._piece_cells):
@@ -36,6 +37,26 @@ func _initialize() -> void:
 		if not _check_settled(game):
 			push_error("T1: Corrupt settled grid at step %d" % i)
 			failures += 1
+
+		# Combo counter must always be in [1, MAX_COMBO].
+		if game._combo < 1 or game._combo > game.MAX_COMBO:
+			push_error("Combo out of range at step %d: %d" % [i, game._combo])
+			failures += 1
+
+		# Rush progress must be non-negative. It may exceed RUSH_GOAL while rush
+		# is active (points overflow into the next bar), but must not go negative.
+		if game._rush_progress < 0:
+			push_error("Rush progress negative at step %d: %d" % [i, game._rush_progress])
+			failures += 1
+
+		# Score must never be negative.
+		if game._score < 0:
+			push_error("Score went negative at step %d: %d" % [i, game._score])
+			failures += 1
+
+		if game._rush_active:
+			rush_ever_activated = true
+
 		if game._piece_cells != last_piece:
 			spawns_seen += 1
 			last_piece = game._piece_cells.duplicate()
@@ -48,8 +69,21 @@ func _initialize() -> void:
 	if max_lines < 1:
 		push_error("T1: No line was ever cleared in %d steps" % STEPS)
 		failures += 1
-	print("T1 (core loop): %s  [steps=%d, max_lines=%d, spawns=%d]" % [
-		"PASS" if failures == 0 else "FAIL", STEPS, max_lines, spawns_seen])
+	# _score resets on board overflow; use the never-resetting _total_score
+	# to verify that points were actually awarded over the full run.
+	if game._total_score <= 0:
+		push_error("Total score never accumulated in %d steps (total=%d)" % [STEPS, game._total_score])
+		failures += 1
+
+	# Verify that rush is reachable. RUSH_GOAL=300 means 3 single-row clears
+	# trigger it; the AI reliably clears that many lines.
+	if not rush_ever_activated:
+		push_error("Rush mode never activated in %d steps" % STEPS)
+		failures += 1
+
+	print("T1 (core loop): %s  [steps=%d, max_lines=%d, total_score=%d, spawns=%d, rush=%s]" % [
+		"PASS" if failures == 0 else "FAIL", STEPS, max_lines, game._total_score, spawns_seen, str(rush_ever_activated)
+	])
 
 	# ---- Test 2: BOMB effect ------------------------------------------------
 	var g2: Node3D = scene.instantiate()
@@ -266,7 +300,9 @@ func _initialize() -> void:
 
 	# ---- Summary ------------------------------------------------------------
 	if failures == 0:
-		print("\nALL TESTS PASSED")
+		print("TEST PASS: %d steps, max lines=%d, total score=%d, spawns=%d, rush=%s" % [
+			STEPS, max_lines, game._total_score, spawns_seen, str(rush_ever_activated)
+		])
 		quit(0)
 	else:
 		push_error("\nTEST SUITE FAILED: %d failure(s)" % failures)
