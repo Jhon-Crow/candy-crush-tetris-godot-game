@@ -91,9 +91,9 @@ func _ready() -> void:
 	_crystal_mesh.bottom_radius = 0.40
 	_crystal_mesh.height = 0.80
 	# 6 radial segments → hexagonal prism; each flat face reads as a crystal
-	# facet. rings = 0 keeps the barrel smooth (no extra edge loops).
+	# facet. rings = 1 keeps height subdivision minimal.
 	_crystal_mesh.radial_segments = 6
-	_crystal_mesh.rings = 0
+	_crystal_mesh.rings = 1
 	_spawn_piece()
 
 
@@ -346,10 +346,14 @@ func _cell_to_world(cell: Vector2i) -> Vector3:
 ##
 ## Visual design goals (issue #13):
 ##   • Semi-transparent — alpha ≈ 0.62, reveals back-panel through the crystal.
-##   • Screen-space refraction — background warps slightly through each shard.
-##   • Subtle highlights — clearcoat layer replaces the harsh rim+emission combo.
+##   • Subtle highlights — low rim tinted toward albedo; very low emission.
 ##   • Faceted silhouette — shared hexagonal-prism mesh (_crystal_mesh) reads as
 ##     a cut gemstone without any custom mesh data.
+##
+## NOTE: This project uses the GL Compatibility renderer (see project.godot).
+## Advanced material features such as refraction and clearcoat are Forward+/Mobile
+## only and are intentionally omitted. The crystal look is achieved with
+## transparency, specular, rim, and emission available in Compatibility.
 func _make_crystal(color: Color) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	mi.mesh = _crystal_mesh
@@ -357,44 +361,32 @@ func _make_crystal(color: Color) -> MeshInstance3D:
 	var mat := StandardMaterial3D.new()
 
 	# --- Base colour with semi-transparency ----------------------------------
+	# TRANSPARENCY_ALPHA is supported by the GL Compatibility renderer.
 	var c := color
 	c.a = 0.62   # semi-transparent crystal; settled pieces keep the same alpha
 	mat.albedo_color = c
-
-	# --- Transparency & refraction -------------------------------------------
-	# TRANSPARENCY_ALPHA enables alpha blending so the crystal is see-through.
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	# Screen-space refraction subtly warps whatever is behind the crystal,
-	# giving the light-bending impression of real glass / crystal.
-	mat.refraction_enabled = true
-	mat.refraction_scale = 0.05
 
 	# --- Surface properties --------------------------------------------------
-	# Low roughness + slight metallic → very smooth, glass-like reflections.
+	# Low roughness + slight metallic → smooth, glass-like specular highlight.
 	mat.metallic = 0.08
 	mat.roughness = 0.10
-
-	# --- Clearcoat (subtle highlight layer) ----------------------------------
-	# Replaces the old harsh rim+emission combination. The clearcoat adds a
-	# crisp, thin Fresnel highlight on the outermost surface — like the coat on
-	# a gemstone — without producing the solid white blob that the old rim did.
-	mat.clearcoat_enabled = true
-	mat.clearcoat = 0.85
-	mat.clearcoat_roughness = 0.05
+	mat.metallic_specular = 0.9
 
 	# --- Rim (very subtle, tinted) -------------------------------------------
-	# Keep a faint rim glow but tint it toward the albedo colour so it blends
-	# naturally rather than producing a harsh white halo.
+	# A faint rim glow tinted toward the albedo colour reads as a facet edge
+	# catching light — like a cut gemstone. Much lower than the old rim = 0.5
+	# to avoid the harsh white halo of the previous design.
 	mat.rim_enabled = true
-	mat.rim = 0.12
-	mat.rim_tint = 0.65
+	mat.rim = 0.14
+	mat.rim_tint = 0.70
 
 	# --- Inner glow (very low emission) --------------------------------------
 	# A tiny emission gives each crystal a sense of trapped internal light
-	# without dominating the highlight.
+	# without dominating the specular highlight.
 	mat.emission_enabled = true
 	mat.emission = color
-	mat.emission_energy_multiplier = 0.06
+	mat.emission_energy_multiplier = 0.07
 
 	# --- Shadow casting -------------------------------------------------------
 	# Alpha-blended transparent objects produce ugly, solid square shadows.

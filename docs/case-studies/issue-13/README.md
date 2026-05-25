@@ -20,6 +20,20 @@ See [issue.md](issue.md) for detailed root cause analysis.
 See [research.md](research.md) for prior art, Godot 4 material properties, and
 alternative approaches researched.
 
+## Renderer constraint
+
+This project uses the **GL Compatibility** renderer (set in `project.godot` and
+`export_presets.cfg`). This renderer is required for single-threaded Web export
+on GitHub Pages. As a result, some advanced material features available in the
+Forward+ renderer are **not available**:
+
+- `refraction_enabled` / `refraction_scale` — Forward+ only
+- `clearcoat_enabled` / `clearcoat` / `clearcoat_roughness` — Forward+ only
+
+The crystal look is achieved using only Compatibility-supported properties:
+`TRANSPARENCY_ALPHA`, `metallic`, `roughness`, `metallic_specular`, `rim`,
+`rim_tint`, and `emission`.
+
 ## Solution implemented
 
 ### 1. Smooth falling (Game.gd)
@@ -36,31 +50,32 @@ Material tuning in the new `_make_crystal()` function:
 
 | Parameter | Before | After |
 |---|---|---|
-| `rim` | 0.5 | 0.12 |
-| `rim_tint` | 0.0 | 0.6 |
-| `emission_energy_multiplier` | 0.22 | 0.06 |
-| `clearcoat` | — | 0.85 |
-| `clearcoat_roughness` | — | 0.05 |
+| `rim` | 0.5 | 0.14 (tinted 0.70 toward albedo) |
+| `emission_energy_multiplier` | 0.22 | 0.07 |
+| `metallic_specular` | 0.5 (default) | 0.9 |
+| `roughness` | 0.22 | 0.10 |
 
-Clearcoat provides a crisp, subtle top-layer highlight without the harsh bright
-blobs of the old rim+emission combination.
+The reduced rim + tinted rim_tint replaces the harsh white halo with a
+subtle facet-edge highlight that blends with the crystal colour. The very
+low emission provides a hint of internal glow without dominating.
 
 ### 3. Crystal appearance (Game.gd)
 
 - **Geometry**: replaced `SphereMesh` with `CylinderMesh` (6 radial segments,
   low-poly hexagonal prism) — gives clearly faceted crystal faces.
 - **Transparency**: `transparency = TRANSPARENCY_ALPHA`, `albedo_color.a = 0.62`
-- **Refraction**: `refraction_enabled = true`, `refraction_scale = 0.05` —
-  subtly warps the background through the crystal.
-- **Surface**: `metallic = 0.08`, `roughness = 0.08` — very smooth glass-like
-  surface.
+- **Surface**: `metallic = 0.08`, `roughness = 0.10`, `metallic_specular = 0.9` —
+  smooth glass-like surface.
 - **Shadow casting disabled** on crystal pieces to avoid ugly blocky shadows
   from alpha-blended geometry.
-- Adjusted lighting (slightly reduced ambient energy) to prevent washed-out
-  transparency.
+- Adjusted lighting (slightly reduced ambient energy, lighter back panel) to
+  show transparency better against the background.
+- **Colours updated** to jewel-tone palette (ruby, amber, citrine, emerald,
+  sapphire, amethyst, rose quartz) that look rich through transparency.
+- All cells in one piece share a colour so the tetromino reads as one crystal.
 
 ## Testing
 
 All existing headless logic tests continue to pass — the changes are purely
-visual (material, mesh, motion interpolation) and do not affect game logic
-(grid state, collision, line clearing, auto-player).
+visual (material parameters, mesh geometry, motion interpolation) and do not
+affect game logic (grid state, collision detection, line clearing, auto-player).
