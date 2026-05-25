@@ -244,6 +244,7 @@ func _effect_bomb(center: Vector2i) -> void:
 					_settled[row][col] = null
 					_settled_types[row][col] = BallType.NORMAL
 					_settled_colors[row][col] = Color.BLACK
+	_apply_gravity_to_settled()
 	_update_hud()
 
 
@@ -259,6 +260,7 @@ func _effect_rainbow(piece_colors: Array) -> void:
 					_settled[row][col] = null
 					_settled_types[row][col] = BallType.NORMAL
 					_settled_colors[row][col] = Color.BLACK
+	_apply_gravity_to_settled()
 	_update_hud()
 
 
@@ -278,7 +280,35 @@ func _effect_lightning(col: int) -> void:
 			_settled[row][col] = null
 			_settled_types[row][col] = BallType.NORMAL
 			_settled_colors[row][col] = Color.BLACK
+	_apply_gravity_to_settled()
 	_update_hud()
+
+
+## Applies gravity to all settled balls: any ball that has empty space below it
+## falls down until it lands on the bottom or on another settled ball.
+## This is called after special effects (bomb, rainbow, lightning) clear cells,
+## so that settled balls do not float in mid-air.
+func _apply_gravity_to_settled() -> void:
+	# Process columns independently — each ball in a column falls as far down as
+	# it can without overlapping another settled ball.
+	for col in GRID_W:
+		# Scan from bottom (row 0) upward, compacting balls toward row 0.
+		var write_row := 0  # next free row in this column
+		for row in GRID_H:
+			if _settled[row][col] != null:
+				if row != write_row:
+					# Move the ball from row → write_row.
+					_settled[write_row][col] = _settled[row][col]
+					_settled_types[write_row][col] = _settled_types[row][col]
+					_settled_colors[write_row][col] = _settled_colors[row][col]
+					_settled[row][col] = null
+					_settled_types[row][col] = BallType.NORMAL
+					_settled_colors[row][col] = Color.BLACK
+					# Snap the mesh to its new world position.
+					var node: MeshInstance3D = _settled[write_row][col]
+					if node != null:
+						node.position = _cell_to_world(Vector2i(col, write_row))
+				write_row += 1
 
 
 func _clear_full_rows() -> void:

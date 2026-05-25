@@ -11,6 +11,7 @@ extends SceneTree
 ##   3. RAINBOW effect — clears all settled balls whose colour matches the piece.
 ##   4. FREEZE effect — sets _freeze_timer and slows the effective fall interval.
 ##   5. LIGHTNING effect — clears the entire target column.
+##   6. Gravity after special effects — balls fall into gaps left by effects.
 
 const STEPS := 4000
 
@@ -181,6 +182,87 @@ func _initialize() -> void:
 		lightning_fails += 1
 	failures += lightning_fails
 	print("T5 (lightning): %s" % ("PASS" if lightning_fails == 0 else "FAIL"))
+
+	# ---- Test 6: gravity after special effects ---------------------------------
+	# After a special effect removes balls from the middle of the settled stack,
+	# the balls above the gap must fall down to fill it.
+	var g6: Node3D = scene.instantiate()
+	root.add_child(g6)
+	g6._ready()
+	var gravity_fails := 0
+
+	# Place a ball at row 0 (bottom) in column 0.
+	_place_ball_color(g6, 0, 0, Color("ff4d6d"))
+	# Place a ball at row 1 above it.
+	_place_ball_color(g6, 1, 0, Color("ffd43b"))
+	# Place a ball at row 2 above row 1.
+	_place_ball_color(g6, 2, 0, Color("51cf66"))
+
+	# Manually clear row 0 of column 0 (simulate a gap appearing at the bottom).
+	if g6._settled[0][0] != null:
+		g6._settled[0][0].queue_free()
+		g6._settled[0][0] = null
+		g6._settled_types[0][0] = g6.BallType.NORMAL
+		g6._settled_colors[0][0] = Color.BLACK
+
+	# Apply gravity — the two balls at rows 1 and 2 must fall down by one row each.
+	g6._apply_gravity_to_settled()
+
+	# After gravity: row 0 should have the ball that was at row 1,
+	# row 1 should have the ball that was at row 2, row 2 should be empty.
+	if g6._settled[0][0] == null:
+		push_error("T6: Ball did not fall into row 0 after gap at bottom")
+		gravity_fails += 1
+	if g6._settled[1][0] == null:
+		push_error("T6: Ball did not fall into row 1 after gap at bottom")
+		gravity_fails += 1
+	if g6._settled[2][0] != null:
+		push_error("T6: Row 2 should be empty after gravity but is occupied")
+		gravity_fails += 1
+	# Verify no floating balls anywhere (every non-null ball has no null below it).
+	for col in g6.GRID_W:
+		var found_empty := false
+		for row in g6.GRID_H:
+			if g6._settled[row][col] == null:
+				found_empty = true
+			elif found_empty:
+				push_error("T6: Ball at (%d,%d) is floating above an empty cell" % [col, row])
+				gravity_fails += 1
+				break
+	if not _check_settled(g6):
+		push_error("T6: Settled grid corrupted after gravity")
+		gravity_fails += 1
+
+	# Also test via lightning: place a column of balls with a ball in the same
+	# column one row above (after lightning clears column 2, ball in col 1
+	# should not be affected, but ball in col 2 at row > 0 should fall to row 0).
+	var g6b: Node3D = scene.instantiate()
+	root.add_child(g6b)
+	g6b._ready()
+
+	# In column 2: place only at row 2 (nothing below it).
+	_place_ball_color(g6b, 2, 2, Color("ff4d6d"))
+	# Place another ball at row 3 in column 2.
+	_place_ball_color(g6b, 3, 2, Color("ffd43b"))
+	# Nothing at rows 0 or 1 in column 2 — balls should fall after effect.
+	# Trigger lightning on another column (col 5) to avoid clearing col 2.
+	g6b._effect_lightning(5)  # clears col 5, applies gravity across all cols
+	# Balls in col 2 at rows 2 and 3 must have fallen to rows 0 and 1.
+	if g6b._settled[0][2] == null:
+		push_error("T6b: Ball in col 2 did not fall to row 0 after gravity")
+		gravity_fails += 1
+	if g6b._settled[1][2] == null:
+		push_error("T6b: Ball in col 2 did not fall to row 1 after gravity")
+		gravity_fails += 1
+	if g6b._settled[2][2] != null:
+		push_error("T6b: Row 2 col 2 should be empty after gravity")
+		gravity_fails += 1
+	if g6b._settled[3][2] != null:
+		push_error("T6b: Row 3 col 2 should be empty after gravity")
+		gravity_fails += 1
+
+	failures += gravity_fails
+	print("T6 (gravity):   %s" % ("PASS" if gravity_fails == 0 else "FAIL"))
 
 	# ---- Summary ------------------------------------------------------------
 	if failures == 0:
