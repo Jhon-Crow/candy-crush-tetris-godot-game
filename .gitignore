@@ -1,0 +1,14 @@
+# Godot 4 generated/import cache
+.godot/
+
+# Exported builds
+build/
+export/
+
+# Local screenshot test artifacts
+shot_*.png
+/.playwright-mcp/
+
+# OS / editor noise
+.DS_Store
+*.swp

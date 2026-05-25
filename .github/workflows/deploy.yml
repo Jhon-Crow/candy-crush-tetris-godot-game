@@ -1,0 +1,120 @@
+name: Build & Deploy
+
+# Builds the Godot Web (HTML5) export and deploys it.
+#  * Every push / PR  -> builds the web export and uploads it as an artifact
+#                        (so broken builds are caught early).
+#  * Push to main     -> additionally deploys to GitHub Pages and, when an
+#                        itch.io target is configured, publishes there too.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+env:
+  GODOT_VERSION: "4.5.2"
+  EXPORT_PRESET: "Web"
+
+jobs:
+  export-web:
+    name: Export Web build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Godot ${{ env.GODOT_VERSION }} (headless)
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          GODOT="Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          wget -q "${BASE}/${GODOT}.zip"
+          unzip -q "${GODOT}.zip"
+          sudo mv "${GODOT}" /usr/local/bin/godot
+          sudo chmod +x /usr/local/bin/godot
+          godot --version
+
+      - name: Install export templates
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          TPZ="Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          wget -q "${BASE}/${TPZ}"
+          unzip -q "${TPZ}"
+          VER="$(cat templates/version.txt)"
+          mkdir -p "$HOME/.local/share/godot/export_templates"
+          mv templates "$HOME/.local/share/godot/export_templates/${VER}"
+
+      - name: Export Web build
+        run: |
+          set -euo pipefail
+          mkdir -p build/web
+          # First pass imports project resources, second pass exports.
+          godot --headless --import || true
+          godot --headless --export-release "${EXPORT_PRESET}" "$PWD/build/web/index.html"
+          # GitHub Pages must not run Jekyll over the build.
+          touch build/web/.nojekyll
+          test -f build/web/index.wasm
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+      - name: Upload build artifact (for itch.io / download)
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: build/web
+
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    needs: export-web
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  publish-itch:
+    name: Publish to itch.io
+    needs: export-web
+    # Only runs on main and only when an itch.io target has been configured
+    # via repository variables (see README). Skipped otherwise.
+    if: github.ref == 'refs/heads/main' && vars.ITCH_USER != '' && vars.ITCH_GAME != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-build
+          path: build/web
+
+      - name: Install butler
+        run: |
+          set -euo pipefail
+          curl -sL -o butler.zip https://broth.itch.ovh/butler/linux-amd64/LATEST/archive/default
+          unzip -q butler.zip
+          chmod +x butler
+          ./butler -V
+
+      - name: Push to itch.io
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_CREDENTIALS }}
+        run: |
+          set -euo pipefail
+          ./butler push build/web "${{ vars.ITCH_USER }}/${{ vars.ITCH_GAME }}:html5"
