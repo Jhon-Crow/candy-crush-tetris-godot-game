@@ -362,15 +362,16 @@ func _test_special_effects() -> int:
 		fails += 1
 
 	# --- Freeze signal ---
-	var freeze_received := false
-	var received_duration := 0.0
-	fx.freeze_activated.connect(func(d): freeze_received = true; received_duration = d)
+	# Use an Array as a mutable container so the lambda can update it
+	# (GDScript lambdas capture primitives by value, but Array by reference).
+	var freeze_state := [false, 0.0]  # [received, duration]
+	fx.freeze_activated.connect(func(d): freeze_state[0] = true; freeze_state[1] = d)
 	fx.apply_freeze(5.0)
-	if not freeze_received:
+	if not freeze_state[0]:
 		push_error("SpecialEffects T3: freeze_activated signal not emitted")
 		fails += 1
-	if received_duration != 5.0:
-		push_error("SpecialEffects T3: wrong duration: %f" % received_duration)
+	if freeze_state[1] != 5.0:
+		push_error("SpecialEffects T3: wrong duration: %f" % freeze_state[1])
 		fails += 1
 
 	# --- Lightning ---
@@ -390,15 +391,16 @@ func _test_special_effects() -> int:
 		fails += 1
 
 	# --- effect_triggered signal ---
-	var effect_count := 0
-	fx.effect_triggered.connect(func(): effect_count += 1)
+	# Use an Array counter so the lambda can mutate it by reference.
+	var effect_counter := [0]
+	fx.effect_triggered.connect(func(): effect_counter[0] += 1)
 	var b_sig := Board.new(8, 16)
 	fx.apply_bomb(b_sig, Vector2i(0, 0), 1)
 	fx.apply_rainbow(b_sig, [Color.WHITE])
 	fx.apply_freeze(1.0)
 	fx.apply_lightning(b_sig, 0)
-	if effect_count != 4:
-		push_error("SpecialEffects T5: expected 4 effect_triggered signals, got %d" % effect_count)
+	if effect_counter[0] != 4:
+		push_error("SpecialEffects T5: expected 4 effect_triggered signals, got %d" % effect_counter[0])
 		fails += 1
 
 	print("OOP SpecialEffects: %s" % ("PASS" if fails == 0 else "FAIL (%d)" % fails))
