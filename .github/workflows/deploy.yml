@@ -114,7 +114,7 @@ jobs:
 
       - name: Push to itch.io
         env:
-          BUTLER_API_KEY: ${{ secrets.BUTLER_CREDENTIALS }}
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
         run: |
           set -euo pipefail
           ./butler push build/web "${{ vars.ITCH_USER }}/${{ vars.ITCH_GAME }}:html5"
