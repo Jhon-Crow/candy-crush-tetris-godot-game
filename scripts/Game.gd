@@ -1,10 +1,10 @@
 extends Node3D
 ## Candy Crush + Tetris — primitive auto-falling implementation.
 ##
-## Tetromino pieces made of multicoloured candy crystal shards fall automatically
-## down a grid. The game is played on a flat playfield, but everything is rendered
-## in a true 3D scene (real faceted crystal meshes, lighting, transparency and
-## refraction) so the visuals can be elaborated on later.
+## Tetromino pieces made of multicoloured candy balls fall automatically down a
+## grid. The game is played on a flat playfield, but everything is rendered in a
+## true 3D scene (real sphere meshes, lighting and shadows) so the visuals can be
+## elaborated on later.
 ##
 ## There is no human input yet. When [member auto_play] is enabled (the default)
 ## a lightweight heuristic steers each piece toward the column that keeps the
@@ -17,29 +17,20 @@ extends Node3D
 const GRID_W := 8        # columns
 const GRID_H := 16       # rows (row 0 = bottom)
 const CELL := 1.0        # world units per cell
-
-## Seconds between downward logical steps. Larger value → slower, more time for
-## the smooth glide to animate between positions.
-const FALL_INTERVAL := 0.55
-
-## Exponential-smoothing speed for the visual glide (λ in 1 − e^(−λΔt)).
-## Higher = catches up faster; lower = more lag / trailing feel.
-const GLIDE_LAMBDA := 12.0
+const FALL_INTERVAL := 0.30  # seconds between downward steps
 
 ## When true, pieces are automatically steered toward a good landing column.
 @export var auto_play := true
 
-# Crystal colour palette — semi-saturated jewel tones that read well through
-# transparency (avoid pure-white or near-white that look washed out when alpha
-# is applied).
+# Candy palette (bright, saturated sweets).
 const COLORS := [
-	Color(0.95, 0.22, 0.35, 1.0), # ruby
-	Color(0.95, 0.52, 0.10, 1.0), # amber
-	Color(0.92, 0.80, 0.12, 1.0), # citrine
-	Color(0.18, 0.78, 0.35, 1.0), # emerald
-	Color(0.18, 0.60, 0.95, 1.0), # sapphire
-	Color(0.52, 0.30, 0.92, 1.0), # amethyst
-	Color(0.90, 0.38, 0.72, 1.0), # rose quartz
+	Color("ff4d6d"), # strawberry
+	Color("ff922b"), # orange
+	Color("ffd43b"), # lemon
+	Color("51cf66"), # apple
+	Color("4dabf7"), # blueberry
+	Color("9775fa"), # grape
+	Color("f783ac"), # bubblegum
 ]
 
 # Tetromino shapes as cell offsets (x right, y up), each normalised so the
@@ -72,7 +63,7 @@ var _piece_cells: Array = []      # cached absolute cells (= base + offsets)
 var _target_x := 0                # auto-player's desired anchor column
 var _fall_timer := 0.0
 var _lines := 0
-var _crystal_mesh: SphereMesh   # shared mesh for all crystals (SphereMesh for CI compat)
+var _ball_mesh: SphereMesh
 var _lines_label: Label
 
 
@@ -84,12 +75,11 @@ func _ready() -> void:
 	_build_back_panel()
 	_build_hud()
 	_init_grid()
-	# SphereMesh: using original mesh type to rule out CylinderMesh CI hang.
-	_crystal_mesh = SphereMesh.new()
-	_crystal_mesh.radius = 0.46
-	_crystal_mesh.height = 0.92
-	_crystal_mesh.radial_segments = 24
-	_crystal_mesh.rings = 12
+	_ball_mesh = SphereMesh.new()
+	_ball_mesh.radius = 0.46
+	_ball_mesh.height = 0.92
+	_ball_mesh.radial_segments = 24
+	_ball_mesh.rings = 12
 	_spawn_piece()
 
 
@@ -98,15 +88,11 @@ func _process(delta: float) -> void:
 	if _fall_timer >= FALL_INTERVAL:
 		_fall_timer -= FALL_INTERVAL
 		_step()
-
-	# Smoothly glide active crystals toward their logical grid position using
-	# exponential smoothing: pos += (target - pos) * (1 − e^(−λΔt)).
-	# This gives a natural ease-out that is frame-rate independent and never
-	# snaps, unlike move_toward which can produce a visible jerk on the last step.
-	var alpha := 1.0 - exp(-GLIDE_LAMBDA * delta)
+	# Smoothly glide active balls toward their logical grid position.
+	var speed := CELL / FALL_INTERVAL * 1.6
 	for i in _piece_nodes.size():
 		var node: MeshInstance3D = _piece_nodes[i]
-		node.position = node.position.lerp(_cell_to_world(_piece_cells[i]), alpha)
+		node.position = node.position.move_toward(_cell_to_world(_piece_cells[i]), speed * delta)
 
 
 # --- Game loop ---------------------------------------------------------------
@@ -144,17 +130,15 @@ func _spawn_piece() -> void:
 	_target_x = _best_target_column() if auto_play else _piece_base.x
 
 	_piece_nodes = []
-	# All cells in one piece share a colour so they read as a single crystal.
-	var piece_color := COLORS[randi() % COLORS.size()]
 	for o in shape:
-		var crystal := _make_crystal(piece_color)
+		var ball := _make_ball(COLORS[randi() % COLORS.size()])
 		# Start one cell higher so the piece glides into view.
-		crystal.position = _cell_to_world(_piece_base + o + Vector2i(0, 1))
-		_piece_nodes.append(crystal)
+		ball.position = _cell_to_world(_piece_base + o + Vector2i(0, 1))
+		_piece_nodes.append(ball)
 	_refresh_cells()
 
 	# If the spawn space is occupied, the board has overflowed. Clear the
-	# settled crystals and keep this fresh piece (which now fits on the empty
+	# settled balls and keep this fresh piece (which now fits on the empty
 	# board) so the demo restarts seamlessly.
 	if not _is_valid(_piece_cells):
 		_reset_board()
@@ -338,37 +322,18 @@ func _cell_to_world(cell: Vector2i) -> Vector3:
 	return Vector3(x, y, 0.0)
 
 
-## Creates a faceted crystal MeshInstance3D with the given jewel colour.
-##
-## Visual design goals (issue #13):
-##   • Subtle highlights — reduced rim and emission vs. original candy balls.
-##   • Faceted silhouette — shared hexagonal-prism mesh (_crystal_mesh) reads as
-##     a cut gemstone without any custom mesh data.
-##
-## NOTE: This project uses the GL Compatibility renderer (see project.godot),
-## required for single-threaded Web export. Advanced material features such as
-## transparency, refraction, and clearcoat are either unsupported (refraction,
-## clearcoat — Forward+ only) or cause the headless logic test to run very slowly
-## (TRANSPARENCY_ALPHA triggers expensive per-frame transparent-object sorting
-## even in headless mode). The crystal look is achieved with opaque materials:
-## faceted geometry + reduced rim + reduced emission.
-func _make_crystal(color: Color) -> MeshInstance3D:
+func _make_ball(color: Color) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
-	mi.mesh = _crystal_mesh
-
+	mi.mesh = _ball_mesh
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = color
 	mat.metallic = 0.0
 	mat.roughness = 0.22
-	# Reduced rim (0.14 vs original 0.5) — subtle facet-edge highlight instead
-	# of the harsh white halo of the original candy-ball design.
 	mat.rim_enabled = true
-	mat.rim = 0.14
-	# Reduced emission (0.07 vs original 0.22) — hint of inner glow, not dominant.
+	mat.rim = 0.5
 	mat.emission_enabled = true
 	mat.emission = color
-	mat.emission_energy_multiplier = 0.07
-
+	mat.emission_energy_multiplier = 0.22
 	mi.material_override = mat
 	add_child(mi)
 	return mi
@@ -378,12 +343,10 @@ func _make_crystal(color: Color) -> MeshInstance3D:
 func _build_environment() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.06, 0.04, 0.12)
-	# Slightly reduced ambient energy so the transparent crystals don't look
-	# washed-out (too much ambient fills the alpha "holes" with flat colour).
+	env.background_color = Color(0.08, 0.06, 0.13)
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.40, 0.38, 0.58)
-	env.ambient_light_energy = 0.45
+	env.ambient_light_color = Color(0.45, 0.42, 0.6)
+	env.ambient_light_energy = 0.6
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
@@ -404,14 +367,14 @@ func _build_camera() -> void:
 func _build_lights() -> void:
 	var key := DirectionalLight3D.new()
 	key.rotation_degrees = Vector3(-50, -35, 0)
-	key.light_energy = 1.1
+	key.light_energy = 1.3
 	key.shadow_enabled = true
 	add_child(key)
 
 	var fill := DirectionalLight3D.new()
 	fill.rotation_degrees = Vector3(-20, 130, 0)
-	fill.light_energy = 0.35
-	fill.light_color = Color(0.75, 0.85, 1.0)
+	fill.light_energy = 0.4
+	fill.light_color = Color(0.7, 0.8, 1.0)
 	add_child(fill)
 
 
@@ -421,10 +384,8 @@ func _build_back_panel() -> void:
 	box.size = Vector3(GRID_W + 0.6, GRID_H + 0.6, 0.4)
 	panel.mesh = box
 	var mat := StandardMaterial3D.new()
-	# Slightly lighter panel so the crystal refraction has something visible to
-	# warp (pure-black background makes refraction invisible).
-	mat.albedo_color = Color(0.16, 0.13, 0.24)
-	mat.roughness = 0.85
+	mat.albedo_color = Color(0.12, 0.10, 0.18)
+	mat.roughness = 0.9
 	panel.material_override = mat
 	panel.position = Vector3(0, 0, -0.7)
 	add_child(panel)
