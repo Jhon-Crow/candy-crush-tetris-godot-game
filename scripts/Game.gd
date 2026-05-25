@@ -345,48 +345,30 @@ func _cell_to_world(cell: Vector2i) -> Vector3:
 ## Creates a faceted crystal MeshInstance3D with the given jewel colour.
 ##
 ## Visual design goals (issue #13):
-##   • Subtle highlights — low rim tinted toward albedo; very low emission.
+##   • Subtle highlights — reduced rim and emission vs. original candy balls.
 ##   • Faceted silhouette — shared hexagonal-prism mesh (_crystal_mesh) reads as
 ##     a cut gemstone without any custom mesh data.
-##   • Glass-like surface — high metallic_specular + low roughness produces sharp
-##     Fresnel-like highlights on each facet edge.
 ##
 ## NOTE: This project uses the GL Compatibility renderer (see project.godot),
 ## required for single-threaded Web export. Advanced material features such as
 ## transparency, refraction, and clearcoat are either unsupported (refraction,
 ## clearcoat — Forward+ only) or cause the headless logic test to run very slowly
 ## (TRANSPARENCY_ALPHA triggers expensive per-frame transparent-object sorting
-## even in headless mode). The crystal look is therefore achieved with opaque
-## materials: faceted geometry + high specular + low roughness + subtle rim +
-## low emission. This produces convincing gemstone / crystal facet highlights
-## without any transparency.
+## even in headless mode). The crystal look is achieved with opaque materials:
+## faceted geometry + reduced rim + reduced emission.
 func _make_crystal(color: Color) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	mi.mesh = _crystal_mesh
 
 	var mat := StandardMaterial3D.new()
-
-	# --- Base colour (opaque) ------------------------------------------------
 	mat.albedo_color = color
-
-	# --- Surface properties --------------------------------------------------
-	# Low roughness + high metallic_specular → very sharp specular highlight on
-	# each flat crystal facet, like light catching the face of a gemstone.
-	mat.metallic = 0.10
-	mat.roughness = 0.08
-	mat.metallic_specular = 1.0
-
-	# --- Rim (very subtle, tinted) -------------------------------------------
-	# A faint rim glow tinted toward the albedo colour reads as a facet edge
-	# catching light — like a cut gemstone. Much lower than the old rim = 0.5
-	# to avoid the harsh white halo of the previous design.
+	mat.metallic = 0.0
+	mat.roughness = 0.22
+	# Reduced rim (0.14 vs original 0.5) — subtle facet-edge highlight instead
+	# of the harsh white halo of the original candy-ball design.
 	mat.rim_enabled = true
 	mat.rim = 0.14
-	mat.rim_tint = 0.70
-
-	# --- Inner glow (very low emission) --------------------------------------
-	# A tiny emission gives each crystal a sense of trapped internal light
-	# without dominating the specular highlight.
+	# Reduced emission (0.07 vs original 0.22) — hint of inner glow, not dominant.
 	mat.emission_enabled = true
 	mat.emission = color
 	mat.emission_energy_multiplier = 0.07
