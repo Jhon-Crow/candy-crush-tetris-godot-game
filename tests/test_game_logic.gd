@@ -137,17 +137,12 @@ func _initialize() -> void:
 	# Advance the fall timer to just under the fast interval; without freeze,
 	# a step would fire. With freeze the step must NOT fire (piece shouldn't move).
 	g4._freeze_timer = 999.0  # keep frozen indefinitely for this check
-	var cells_before := g4._piece_cells.duplicate()
-	g4._fall_timer = g4.FALL_INTERVAL - 0.001  # just under the fast threshold
-	# Simulate one _process tick of delta = 0 (timer won't advance but won't step).
-	# Instead, tick with delta = FALL_INTERVAL (fast) which should NOT trigger a step.
-	g4._fall_timer = g4.FALL_INTERVAL  # exactly at fast threshold
-	# The frozen interval is FALL_INTERVAL_FROZEN (4× slower); since _fall_timer
-	# equals the *fast* interval (< frozen threshold), no step should occur.
-	# We test by calling _process with a tiny delta that doesn't push the timer over.
+	var cells_before: Array = g4._piece_cells.duplicate()
+	# The frozen interval is FALL_INTERVAL_FROZEN (4× slower); advance the timer
+	# to just under the frozen threshold — no step should fire.
 	g4._fall_timer = 0.0
 	g4._process(g4.FALL_INTERVAL - 0.001)   # still under frozen interval
-	var cells_after := g4._piece_cells.duplicate()
+	var cells_after: Array = g4._piece_cells.duplicate()
 	if cells_before != cells_after:
 		# Piece moved even though the frozen interval was not reached — that's wrong.
 		push_error("T4: Piece moved during freeze when it shouldn't have")
