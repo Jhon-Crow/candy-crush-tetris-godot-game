@@ -130,9 +130,15 @@ func _spawn_piece() -> void:
 	_target_x = _best_target_column() if auto_play else _piece_base.x
 
 	_piece_nodes = []
-	var piece_color := COLORS[randi() % COLORS.size()]
+	# All cells in one piece share a single material instance (same colour).
+	# Sharing one material object avoids Godot's per-material shader caching
+	# overhead when multiple MeshInstance3D objects have identical properties.
+	var piece_mat := _make_piece_material(COLORS[randi() % COLORS.size()])
 	for o in shape:
-		var ball := _make_ball(piece_color)
+		var ball := MeshInstance3D.new()
+		ball.mesh = _ball_mesh
+		ball.material_override = piece_mat
+		add_child(ball)
 		# Start one cell higher so the piece glides into view.
 		ball.position = _cell_to_world(_piece_base + o + Vector2i(0, 1))
 		_piece_nodes.append(ball)
@@ -323,9 +329,9 @@ func _cell_to_world(cell: Vector2i) -> Vector3:
 	return Vector3(x, y, 0.0)
 
 
-func _make_ball(color: Color) -> MeshInstance3D:
-	var mi := MeshInstance3D.new()
-	mi.mesh = _ball_mesh
+## Creates a StandardMaterial3D for one piece with the given jewel colour.
+## Used by _spawn_piece(); all cells in the piece share this single material.
+func _make_piece_material(color: Color) -> StandardMaterial3D:
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = color
 	mat.metallic = 0.0
@@ -335,7 +341,13 @@ func _make_ball(color: Color) -> MeshInstance3D:
 	mat.emission_enabled = true
 	mat.emission = color
 	mat.emission_energy_multiplier = 0.22
-	mi.material_override = mat
+	return mat
+
+
+func _make_ball(color: Color) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	mi.mesh = _ball_mesh
+	mi.material_override = _make_piece_material(color)
 	add_child(mi)
 	return mi
 
