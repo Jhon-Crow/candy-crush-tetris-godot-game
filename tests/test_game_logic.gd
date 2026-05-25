@@ -8,7 +8,11 @@ extends SceneTree
 ## real-time timer) and asserts the core invariants:
 ##   * the active piece is always in a valid (in-bounds, non-overlapping) state;
 ##   * settled balls stay within the grid and never overlap;
-##   * the spawn -> lock -> line-clear loop actually makes progress.
+##   * the spawn -> lock -> line-clear loop actually makes progress;
+##   * score accumulates as lines are cleared;
+##   * combo counter stays within [1, MAX_COMBO];
+##   * rush progress bar value stays within [0, 1];
+##   * rush activates when the score meter fills.
 
 const STEPS := 4000
 
@@ -26,6 +30,7 @@ func _initialize() -> void:
 	var max_lines := 0
 	var spawns_seen := 0
 	var last_piece = null
+	var rush_ever_activated := false
 
 	for i in range(STEPS):
 		# The active piece must always be in a valid position.
@@ -37,6 +42,24 @@ func _initialize() -> void:
 		if not _check_settled(game):
 			push_error("Corrupt settled grid at step %d" % i)
 			failures += 1
+
+		# Combo counter must always be in [1, MAX_COMBO].
+		if game._combo < 1 or game._combo > game.MAX_COMBO:
+			push_error("Combo out of range at step %d: %d" % [i, game._combo])
+			failures += 1
+
+		# Rush progress must be in [0, RUSH_GOAL).
+		if game._rush_progress < 0 or game._rush_progress >= game.RUSH_GOAL:
+			push_error("Rush progress out of range at step %d: %d" % [i, game._rush_progress])
+			failures += 1
+
+		# Score must never decrease.
+		if game._score < 0:
+			push_error("Score went negative at step %d: %d" % [i, game._score])
+			failures += 1
+
+		if game._rush_active:
+			rush_ever_activated = true
 
 		if game._piece_cells != last_piece:
 			spawns_seen += 1
@@ -51,9 +74,20 @@ func _initialize() -> void:
 	if max_lines < 1:
 		push_error("No line was ever cleared in %d steps" % STEPS)
 		failures += 1
+	if game._score <= 0:
+		push_error("Score never accumulated in %d steps (score=%d)" % [STEPS, game._score])
+		failures += 1
+
+	# Verify that rush is reachable (it requires RUSH_GOAL=1000 points and
+	# 4000 steps of auto-play easily accumulates that).
+	if not rush_ever_activated:
+		push_error("Rush mode never activated in %d steps" % STEPS)
+		failures += 1
 
 	if failures == 0:
-		print("TEST PASS: %d steps, max lines cleared=%d, distinct piece states=%d" % [STEPS, max_lines, spawns_seen])
+		print("TEST PASS: %d steps, max lines=%d, score=%d, spawns=%d, rush=%s" % [
+			STEPS, max_lines, game._score, spawns_seen, str(rush_ever_activated)
+		])
 		quit(0)
 	else:
 		push_error("TEST FAIL: %d invariant violation(s)" % failures)
