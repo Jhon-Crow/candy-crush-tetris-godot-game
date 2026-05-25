@@ -107,7 +107,8 @@ jobs:
       - name: Install butler
         run: |
           set -euo pipefail
-          curl -sL -o butler.zip https://broth.itch.ovh/butler/linux-amd64/LATEST/archive/default
+          # broth.itch.ovh was decommissioned; the canonical URL is now broth.itch.zone
+          curl -sL -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
           unzip -q butler.zip
           chmod +x butler
           ./butler -V
