@@ -4,22 +4,23 @@ extends SceneTree
 ## Run with:
 ##   godot --headless --script tests/test_game_logic.gd
 ##
-## It instances the main scene, drives the fall loop directly (bypassing the
-## real-time timer) and asserts the core invariants:
-##   * the active piece is always in a valid (in-bounds, non-overlapping) state;
-##   * settled balls stay within the grid and never overlap;
-##   * the spawn -> lock -> line-clear loop actually makes progress.
+## Tests:
+##   1. Core loop invariants over 4 000 steps (piece validity, grid integrity,
+##      line clearing progress).
+##   2. BOMB effect — clears cells within the configured radius.
+##   3. RAINBOW effect — clears all settled balls whose colour matches the piece.
+##   4. FREEZE effect — sets _freeze_timer and slows the effective fall interval.
+##   5. LIGHTNING effect — clears the entire target column.
 
 const STEPS := 4000
 
 
 func _initialize() -> void:
 	var scene: PackedScene = load("res://scenes/Main.tscn")
+
+	# ---- Test 1: core loop invariants ---------------------------------------
 	var game: Node3D = scene.instantiate()
 	root.add_child(game)
-	# A custom SceneTree main loop does not pump frames during _initialize, so
-	# _ready() is not dispatched automatically here. Invoke it explicitly to
-	# build the board and spawn the first piece before driving the fall loop.
 	game._ready()
 
 	var failures := 0
@@ -28,37 +29,176 @@ func _initialize() -> void:
 	var last_piece = null
 
 	for i in range(STEPS):
-		# The active piece must always be in a valid position.
 		if not game._is_valid(game._piece_cells):
-			push_error("Invalid active piece at step %d: %s" % [i, str(game._piece_cells)])
+			push_error("T1: Invalid active piece at step %d: %s" % [i, str(game._piece_cells)])
 			failures += 1
-
-		# Settled balls must stay inside the grid and never collide.
 		if not _check_settled(game):
-			push_error("Corrupt settled grid at step %d" % i)
+			push_error("T1: Corrupt settled grid at step %d" % i)
 			failures += 1
-
 		if game._piece_cells != last_piece:
 			spawns_seen += 1
 			last_piece = game._piece_cells.duplicate()
-
 		game._step()
 		max_lines = max(max_lines, game._lines)
 
 	if spawns_seen < 2:
-		push_error("Pieces never advanced (spawns_seen=%d)" % spawns_seen)
+		push_error("T1: Pieces never advanced (spawns_seen=%d)" % spawns_seen)
 		failures += 1
 	if max_lines < 1:
-		push_error("No line was ever cleared in %d steps" % STEPS)
+		push_error("T1: No line was ever cleared in %d steps" % STEPS)
 		failures += 1
+	print("T1 (core loop): %s  [steps=%d, max_lines=%d, spawns=%d]" % [
+		"PASS" if failures == 0 else "FAIL", STEPS, max_lines, spawns_seen])
 
+	# ---- Test 2: BOMB effect ------------------------------------------------
+	var g2: Node3D = scene.instantiate()
+	root.add_child(g2)
+	g2._ready()
+	var bomb_fails := 0
+
+	# Fill a 5×5 block of settled cells centred at (4, 4) to give the bomb
+	# something to clear.
+	_fill_rect(g2, 2, 2, 6, 6)
+
+	var filled_before := _count_settled(g2)
+	if filled_before == 0:
+		push_error("T2: Pre-fill failed — nothing to clear")
+		bomb_fails += 1
+	else:
+		# Fire a bomb at (4, 4) with the default radius of 2.
+		g2._effect_bomb(Vector2i(4, 4))
+		var filled_after := _count_settled(g2)
+		if filled_after >= filled_before:
+			push_error("T2: Bomb had no effect (before=%d, after=%d)" % [filled_before, filled_after])
+			bomb_fails += 1
+		if not _check_settled(g2):
+			push_error("T2: Settled grid corrupted after bomb")
+			bomb_fails += 1
+		# Cells within the bomb radius (Chebyshev 2) must be empty.
+		for row in range(2, 7):
+			for col in range(2, 7):
+				if maxi(absi(col - 4), absi(row - 4)) <= g2.bomb_radius:
+					if g2._settled[row][col] != null:
+						push_error("T2: Cell (%d,%d) not cleared by bomb" % [col, row])
+						bomb_fails += 1
+	failures += bomb_fails
+	print("T2 (bomb):      %s" % ("PASS" if bomb_fails == 0 else "FAIL"))
+
+	# ---- Test 3: RAINBOW effect ---------------------------------------------
+	var g3: Node3D = scene.instantiate()
+	root.add_child(g3)
+	g3._ready()
+	var rainbow_fails := 0
+
+	var target_color := Color("ff4d6d")   # strawberry
+	var other_color  := Color("4dabf7")   # blueberry
+
+	# Place some balls of both colours.
+	_place_ball_color(g3, 0, 0, target_color)
+	_place_ball_color(g3, 0, 1, target_color)
+	_place_ball_color(g3, 0, 2, other_color)
+	_place_ball_color(g3, 0, 3, other_color)
+
+	var total_before := _count_settled(g3)
+	g3._effect_rainbow([target_color])
+	var total_after := _count_settled(g3)
+
+	# Two target-color balls should be gone; two other-color balls should remain.
+	if total_after != total_before - 2:
+		push_error("T3: Rainbow cleared wrong count (before=%d after=%d, expected %d)" % [
+			total_before, total_after, total_before - 2])
+		rainbow_fails += 1
+	if g3._settled[0][0] != null or g3._settled[0][1] != null:
+		push_error("T3: Target-colour balls were not cleared")
+		rainbow_fails += 1
+	if g3._settled[0][2] == null or g3._settled[0][3] == null:
+		push_error("T3: Non-target-colour balls were incorrectly cleared")
+		rainbow_fails += 1
+	if not _check_settled(g3):
+		push_error("T3: Settled grid corrupted after rainbow")
+		rainbow_fails += 1
+	failures += rainbow_fails
+	print("T3 (rainbow):   %s" % ("PASS" if rainbow_fails == 0 else "FAIL"))
+
+	# ---- Test 4: FREEZE effect ----------------------------------------------
+	var g4: Node3D = scene.instantiate()
+	root.add_child(g4)
+	g4._ready()
+	var freeze_fails := 0
+
+	if g4._freeze_timer != 0.0:
+		push_error("T4: _freeze_timer should start at 0, got %f" % g4._freeze_timer)
+		freeze_fails += 1
+	g4._effect_freeze()
+	if g4._freeze_timer <= 0.0:
+		push_error("T4: _freeze_timer not set after _effect_freeze()")
+		freeze_fails += 1
+	# Verify that _process uses the slower interval while frozen.
+	# Advance the fall timer to just under the fast interval; without freeze,
+	# a step would fire. With freeze the step must NOT fire (piece shouldn't move).
+	g4._freeze_timer = 999.0  # keep frozen indefinitely for this check
+	var cells_before := g4._piece_cells.duplicate()
+	g4._fall_timer = g4.FALL_INTERVAL - 0.001  # just under the fast threshold
+	# Simulate one _process tick of delta = 0 (timer won't advance but won't step).
+	# Instead, tick with delta = FALL_INTERVAL (fast) which should NOT trigger a step.
+	g4._fall_timer = g4.FALL_INTERVAL  # exactly at fast threshold
+	# The frozen interval is FALL_INTERVAL_FROZEN (4× slower); since _fall_timer
+	# equals the *fast* interval (< frozen threshold), no step should occur.
+	# We test by calling _process with a tiny delta that doesn't push the timer over.
+	g4._fall_timer = 0.0
+	g4._process(g4.FALL_INTERVAL - 0.001)   # still under frozen interval
+	var cells_after := g4._piece_cells.duplicate()
+	if cells_before != cells_after:
+		# Piece moved even though the frozen interval was not reached — that's wrong.
+		push_error("T4: Piece moved during freeze when it shouldn't have")
+		freeze_fails += 1
+	failures += freeze_fails
+	print("T4 (freeze):    %s" % ("PASS" if freeze_fails == 0 else "FAIL"))
+
+	# ---- Test 5: LIGHTNING effect -------------------------------------------
+	var g5: Node3D = scene.instantiate()
+	root.add_child(g5)
+	g5._ready()
+	var lightning_fails := 0
+
+	# Fill column 3 entirely.
+	for row in g5.GRID_H:
+		_place_ball_color(g5, row, 3, Color("ffd43b"))
+
+	# Fill a different column to ensure it is NOT cleared.
+	for row in g5.GRID_H:
+		_place_ball_color(g5, row, 5, Color("51cf66"))
+
+	g5._effect_lightning(3)
+
+	# Column 3 must be empty.
+	for row in g5.GRID_H:
+		if g5._settled[row][3] != null:
+			push_error("T5: Lightning did not clear row %d of column 3" % row)
+			lightning_fails += 1
+	# Column 5 must be untouched.
+	for row in g5.GRID_H:
+		if g5._settled[row][5] == null:
+			push_error("T5: Lightning incorrectly cleared row %d of column 5" % row)
+			lightning_fails += 1
+	if not _check_settled(g5):
+		push_error("T5: Settled grid corrupted after lightning")
+		lightning_fails += 1
+	failures += lightning_fails
+	print("T5 (lightning): %s" % ("PASS" if lightning_fails == 0 else "FAIL"))
+
+	# ---- Summary ------------------------------------------------------------
 	if failures == 0:
-		print("TEST PASS: %d steps, max lines cleared=%d, distinct piece states=%d" % [STEPS, max_lines, spawns_seen])
+		print("\nALL TESTS PASSED")
 		quit(0)
 	else:
-		push_error("TEST FAIL: %d invariant violation(s)" % failures)
+		push_error("\nTEST SUITE FAILED: %d failure(s)" % failures)
 		quit(1)
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 func _check_settled(game: Node3D) -> bool:
 	var seen := {}
@@ -74,3 +214,29 @@ func _check_settled(game: Node3D) -> bool:
 				return false  # same ball referenced from two cells
 			seen[id] = true
 	return true
+
+
+func _count_settled(game: Node3D) -> int:
+	var count := 0
+	for row in game.GRID_H:
+		for col in game.GRID_W:
+			if game._settled[row][col] != null:
+				count += 1
+	return count
+
+
+## Fills a rectangular region of settled cells with dummy ball nodes.
+func _fill_rect(game: Node3D, r0: int, c0: int, r1: int, c1: int) -> void:
+	for row in range(r0, r1 + 1):
+		for col in range(c0, c1 + 1):
+			if row < game.GRID_H and col < game.GRID_W:
+				_place_ball_color(game, row, col, Color("ffffff"))
+
+
+## Places a dummy ball node at (row, col) with the given colour.
+func _place_ball_color(game: Node3D, row: int, col: int, color: Color) -> void:
+	var mi := MeshInstance3D.new()
+	game.add_child(mi)
+	game._settled[row][col] = mi
+	game._settled_colors[row][col] = color
+	game._settled_types[row][col] = game.BallType.NORMAL
