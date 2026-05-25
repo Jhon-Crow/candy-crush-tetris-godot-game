@@ -1,0 +1,41 @@
+name: CI
+
+# Runs the headless game-logic test on every push and pull request so
+# regressions in the falling / locking / line-clearing logic surface quickly.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: "4.5.2"
+
+jobs:
+  test:
+    name: Headless logic test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Godot ${{ env.GODOT_VERSION }} (headless)
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          GODOT="Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          wget -q "${BASE}/${GODOT}.zip"
+          unzip -q "${GODOT}.zip"
+          sudo mv "${GODOT}" /usr/local/bin/godot
+          sudo chmod +x /usr/local/bin/godot
+          godot --version
+
+      - name: Import project
+        run: godot --headless --import || true
+
+      - name: Run game-logic test
+        run: |
+          set -euo pipefail
+          # The test script calls quit(0) on success and quit(1) on failure;
+          # propagate that exit code to the job.
+          godot --headless --script tests/test_game_logic.gd
