@@ -345,33 +345,36 @@ func _cell_to_world(cell: Vector2i) -> Vector3:
 ## Creates a faceted crystal MeshInstance3D with the given jewel colour.
 ##
 ## Visual design goals (issue #13):
-##   • Semi-transparent — alpha ≈ 0.62, reveals back-panel through the crystal.
 ##   • Subtle highlights — low rim tinted toward albedo; very low emission.
 ##   • Faceted silhouette — shared hexagonal-prism mesh (_crystal_mesh) reads as
 ##     a cut gemstone without any custom mesh data.
+##   • Glass-like surface — high metallic_specular + low roughness produces sharp
+##     Fresnel-like highlights on each facet edge.
 ##
-## NOTE: This project uses the GL Compatibility renderer (see project.godot).
-## Advanced material features such as refraction and clearcoat are Forward+/Mobile
-## only and are intentionally omitted. The crystal look is achieved with
-## transparency, specular, rim, and emission available in Compatibility.
+## NOTE: This project uses the GL Compatibility renderer (see project.godot),
+## required for single-threaded Web export. Advanced material features such as
+## transparency, refraction, and clearcoat are either unsupported (refraction,
+## clearcoat — Forward+ only) or cause the headless logic test to run very slowly
+## (TRANSPARENCY_ALPHA triggers expensive per-frame transparent-object sorting
+## even in headless mode). The crystal look is therefore achieved with opaque
+## materials: faceted geometry + high specular + low roughness + subtle rim +
+## low emission. This produces convincing gemstone / crystal facet highlights
+## without any transparency.
 func _make_crystal(color: Color) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	mi.mesh = _crystal_mesh
 
 	var mat := StandardMaterial3D.new()
 
-	# --- Base colour with semi-transparency ----------------------------------
-	# TRANSPARENCY_ALPHA is supported by the GL Compatibility renderer.
-	var c := color
-	c.a = 0.62   # semi-transparent crystal; settled pieces keep the same alpha
-	mat.albedo_color = c
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	# --- Base colour (opaque) ------------------------------------------------
+	mat.albedo_color = color
 
 	# --- Surface properties --------------------------------------------------
-	# Low roughness + slight metallic → smooth, glass-like specular highlight.
-	mat.metallic = 0.08
-	mat.roughness = 0.10
-	mat.metallic_specular = 0.9
+	# Low roughness + high metallic_specular → very sharp specular highlight on
+	# each flat crystal facet, like light catching the face of a gemstone.
+	mat.metallic = 0.10
+	mat.roughness = 0.08
+	mat.metallic_specular = 1.0
 
 	# --- Rim (very subtle, tinted) -------------------------------------------
 	# A faint rim glow tinted toward the albedo colour reads as a facet edge
@@ -387,11 +390,6 @@ func _make_crystal(color: Color) -> MeshInstance3D:
 	mat.emission_enabled = true
 	mat.emission = color
 	mat.emission_energy_multiplier = 0.07
-
-	# --- Shadow casting -------------------------------------------------------
-	# Alpha-blended transparent objects produce ugly, solid square shadows.
-	# Disable shadow casting on crystal pieces to keep the scene clean.
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 	mi.material_override = mat
 	add_child(mi)
