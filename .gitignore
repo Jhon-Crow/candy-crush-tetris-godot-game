@@ -12,3 +12,6 @@ shot_*.png
 # OS / editor noise
 .DS_Store
 *.swp
+
+# Local CI investigation logs
+ci-logs/
